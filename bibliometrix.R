@@ -20,6 +20,9 @@ networkPlot(NetMatrix, n = 30, Title = "Collaboration Network")
 
 thematicMap(M, field = "keywords", n = 250)
 
+biblioshiny()
+
+
 
 
 
