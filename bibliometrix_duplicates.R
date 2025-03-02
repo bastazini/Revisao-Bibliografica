@@ -16,6 +16,12 @@ Wos_rev_por = convert2df("String6port_Web_review.bib", dbsource = "isi", format 
 Database = mergeDbSources(Sco_art, Sco_book, Sco_rev,Wos_art,Wos_rev,Sco_art_por,Sco_rev_por, Wos_art_por, Wos_rev_por, remove.duplicated = TRUE)
 dim(Database)
 
+####Analyze data
+results <- biblioAnalysis(Database)
+summary(results, k = 10, pause = FALSE)
+plot(results, k=10)
+
+###Save as xlsx
 write.xlsx(Database, file = "cerrado.xlsx")
 
 biblioshiny()
