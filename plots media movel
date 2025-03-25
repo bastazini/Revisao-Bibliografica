@@ -1,0 +1,47 @@
+library(ggplot2)
+library(zoo)
+library(dplyr)
+library(tidyr)
+
+# importando os dados copiando e colando no mac
+data =read.table(pipe("pbpaste"), sep="\t", header=T);data
+
+
+# Convert from wide to long format
+data_long <- data %>%
+  pivot_longer(-Ano, names_to = "Station", values_to = "Rainy_Days")
+
+# Calculate yearly mean rainy days
+mean_rain <- data_long %>%
+  group_by(Ano) %>%
+  summarise(Mean_Rainy_Days = mean(Rainy_Days, na.rm = TRUE))
+
+# Calculate 5-year moving average
+window_size <- 5
+mean_rain$Moving_Avg <- rollmean(mean_rain$Mean_Rainy_Days, k = window_size, fill = NA, align = "right")
+
+# Merge with original long data for plotting
+data_plot <- left_join(data_long, mean_rain, by = "Ano")
+
+# Plot dias chuvosos
+ggplot(data_plot, aes(x = Ano)) +
+  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Individual stations
+  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Mean across stations
+  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Moving average
+  labs(title = "Número de Dias Chuvosos - Média Móvel de 5 Anos",
+       subtitle = "Cinza = Estações Individuais | Azul = Média Geral | Vermelho = Média Móvel",
+       x = "Ano",
+       y = "Dias Chuvosos") +
+  theme_minimal()
+
+# Plot Chuva
+ggplot(data_plot, aes(x = Ano)) +
+  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Individual stations
+  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Mean across stations
+  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Moving average
+  labs(title = "Chuva - Média Móvel de 5 Anos",
+       subtitle = "Cinza = Estações Individuais | Azul = Média Geral | Vermelho = Média Móvel",
+       x = "Ano",
+       y = "Chuva") +
+  theme_minimal()
+
