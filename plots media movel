@@ -2,6 +2,8 @@ library(ggplot2)
 library(zoo)
 library(dplyr)
 library(tidyr)
+library(ggplot2)
+
 
 # importando os dados copiando e colando no mac
 data =read.table(pipe("pbpaste"), sep="\t", header=T);data
@@ -24,24 +26,59 @@ mean_rain$Moving_Avg <- rollmean(mean_rain$Mean_Rainy_Days, k = window_size, fil
 data_plot <- left_join(data_long, mean_rain, by = "Ano")
 
 # Plot dias chuvosos
+# Calcular o coeficiente de regressão padronizado
+mean_rain$Year_scaled <- scale(mean_rain$Ano)
+mean_rain$Moving_Avg_scaled <- scale(mean_rain$Moving_Avg)
+
+# Ajustar o modelo linear com as variáveis padronizadas
+lm_scaled <- lm(Moving_Avg_scaled ~ Year_scaled, data = mean_rain)
+
+# Extrair o coeficiente de regressão padronizado e o p-valor
+standardized_slope <- coef(lm_scaled)[2]
+p_value <- summary(lm_scaled)$coefficients[2, 4]  # Extrair o p-valor
+
+# Criar o gráfico com a anotação
 ggplot(data_plot, aes(x = Ano)) +
-  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Individual stations
-  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Mean across stations
-  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Moving average
-  labs(title = "Número de Dias Chuvosos - Média Móvel de 5 Anos",
+  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Estações individuais
+  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Média geral
+  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Média móvel
+  labs(title = "Dias chuvosos - Média Móvel de 5 Anos",
        subtitle = "Cinza = Estações Individuais | Azul = Média Geral | Vermelho = Média Móvel",
        x = "Ano",
        y = "Dias Chuvosos") +
+  annotate("text", 
+           x = max(mean_rain$Ano) - 5,  # Posicionando mais à direita
+           y = min(mean_rain$Moving_Avg, na.rm = TRUE) + 5,  # Ajuste para a parte inferior
+           label = bquote(β[padronizado] == .(round(standardized_slope, 3)) ~ "\n" ~ "P-valor:" ~ .(signif(p_value, 3))),
+           color = "black", size = 4, hjust = 1, vjust = 4) +  # Ajuste de fonte menor e alinhamento
   theme_minimal()
 
+
 # Plot Chuva
+
+# Calcular o coeficiente de regressão padronizado
+mean_rain$Year_scaled <- scale(mean_rain$Ano)
+mean_rain$Moving_Avg_scaled <- scale(mean_rain$Moving_Avg)
+
+# Ajustar o modelo linear com as variáveis padronizadas
+lm_scaled <- lm(Moving_Avg_scaled ~ Year_scaled, data = mean_rain)
+
+# Extrair o coeficiente de regressão padronizado e o p-valor
+standardized_slope <- coef(lm_scaled)[2]
+p_value <- summary(lm_scaled)$coefficients[2, 4]  # Extrair o p-valor
+
+# Criar o gráfico com a anotação
 ggplot(data_plot, aes(x = Ano)) +
-  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Individual stations
-  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Mean across stations
-  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Moving average
+  geom_line(aes(y = Rainy_Days, group = Station), color = "gray", alpha = 0.3, size = 0.7) +  # Estações individuais
+  geom_line(aes(y = Mean_Rainy_Days), color = "blue", size = 1.2) +  # Média geral
+  geom_line(aes(y = Moving_Avg), color = "red", size = 1.5) +  # Média móvel
   labs(title = "Chuva - Média Móvel de 5 Anos",
        subtitle = "Cinza = Estações Individuais | Azul = Média Geral | Vermelho = Média Móvel",
        x = "Ano",
        y = "Chuva") +
+  annotate("text", 
+           x = max(mean_rain$Ano) - 5,  # Posicionando mais à direita
+           y = min(mean_rain$Moving_Avg, na.rm = TRUE) + 5,  # Ajuste para a parte inferior
+           label = bquote(β[padronizado] == .(round(standardized_slope, 3)) ~ "\n" ~ "P-valor:" ~ .(signif(p_value, 3))),
+           color = "black", size = 4, hjust = 1, vjust = 4) +  # Ajuste de fonte menor e alinhamento
   theme_minimal()
-
