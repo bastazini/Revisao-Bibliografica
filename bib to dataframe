@@ -1,0 +1,70 @@
+#define the path of the file 
+your_file.bib= 
+ 
+library(RefManageR)
+library(dplyr)
+library(writexl)
+
+# Function to process BibTeX file
+bib_to_dataframe <- function(bib_file_path) {
+  tryCatch({
+    # Read the BibTeX file
+    entries <- RefManageR::ReadBib(bib_file_path, check = FALSE)
+    df <- as.data.frame(entries)
+    
+    # Helper function to safely extract fields
+    safe_extract <- function(data, field) {
+      if (field %in% names(data)) {
+        return(data[[field]])
+      } else {
+        return(rep(NA, nrow(data))) # Return NA vector of the correct length
+      }
+    }
+    
+    # Use safe_extract to handle optional fields, and ensure right order
+    df <- df %>%
+      mutate(
+        Estudos = safe_extract(df, "usera"), # or userb, userc: Check your BibTeX file!
+        Título = safe_extract(df, "title"),
+        Autores = safe_extract(df, "author"),
+        `Primeiro Autor` = sapply(strsplit(safe_extract(df, "author"), " and "), function(x) { # Extract first author
+          gsub("\\s+.*", "", x[1])  #Remove everything after first word
+        }),
+        `Tipo de Publicação` = safe_extract(df, "entrytype"),
+        Ano = safe_extract(df, "year"),
+        Resumo = safe_extract(df, "abstract"),
+        Revista = safe_extract(df, "journal"),
+        url = safe_extract(df, "url"),
+        língua = safe_extract(df, "language"),
+        `palavras-chave` = safe_extract(df, "keywords"),
+        DOI = safe_extract(df, "doi")
+      ) %>%
+      select(Estudos, Título, Autores, `Primeiro Autor`, `Tipo de Publicação`, Ano, Resumo, Revista, url, língua, `palavras-chave`, DOI)
+    
+    return(df)
+    
+  }, error = function(e) {
+    cat("Error processing BibTeX file:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+}
+
+# Main part of the script
+main <- function() {
+  bib_file <- your_file.bib
+  output_excel <- "bibliographic_data.xlsx"
+  
+  df <- bib_to_dataframe(bib_file)
+  
+  if (!is.null(df)) {
+    tryCatch({
+      writexl::write_xlsx(df, output_excel)
+      cat("Data successfully written to", output_excel, "\n")
+    }, error = function(e) {
+      cat("Error writing to Excel file:", conditionMessage(e), "\n")
+    })
+  }
+}
+
+# Run the main function
+main()
