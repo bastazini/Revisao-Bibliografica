@@ -1,222 +1,203 @@
-# --- 1. Load Necessary Libraries ---
-# install.packages("readxl") # Run this if you haven't installed it before
-# install.packages("dplyr")  # Run this if you haven't installed it before
-# install.packages("bbmle") # Run this if you haven't installed it before
+# --- 0. Carregar Bibliotecas Necessárias ---
+# install.packages("readxl") # Execute se não tiver instalado
+# install.packages("dplyr")  # Execute se não tiver instalado
+# install.packages("bbmle") # Execute se não tiver instalado
 
 library(readxl)
 library(dplyr)
 library(bbmle)
 
-# --- 2. Load and Prepare Data ---
-excel_file <- "bibliographic_data_output.xlsx" # Make sure this file is in your working directory or provide the full path
-output_plot_file <- "publication_trend_plot.png" # Optional: File name to save the plot
+# --- 1. Parâmetros ---
+excel_file <- "bibliographic_data_output.xlsx" # Verifique se o arquivo está no diretório ou forneça o caminho completo
+output_plot_file <- "grafico_tendencia_publicacoes.png" # Opcional: Nome do arquivo para salvar o gráfico
 
+# --- 2. Carregar e Preparar Dados ---
 tryCatch({
-  # Read the sheet containing the data (assuming it's the first sheet)
+  # Ler a planilha com os dados (assumindo ser a primeira)
   bib_data <- read_excel(excel_file, sheet = 1)
-  
-  # Check if 'Ano' column exists
+
+  # Verificar se a coluna 'Ano' existe
   if (!"Ano" %in% names(bib_data)) {
-    stop("Error: Column 'Ano' not found in the Excel file.")
+    stop("Erro: Coluna 'Ano' não encontrada no arquivo Excel.") # PT
   }
-  
-  # Remove rows where 'Ano' is NA, and ensure 'Ano' is numeric
+
+  # Remover linhas onde 'Ano' é NA e garantir que 'Ano' seja numérico
   pub_counts <- bib_data %>%
     filter(!is.na(Ano)) %>%
-    mutate(Ano = as.numeric(as.character(Ano))) %>% # Ensure 'Ano' is numeric
-    filter(!is.na(Ano)) %>% # Filter again in case conversion created NAs
-    count(Ano, name = "Count") %>% # Count publications per year
-    arrange(Ano) # Sort by year (good practice)
-  
-  # Check if we have enough data points for modeling
-  if (nrow(pub_counts) < 5) { # Need at least a few points for these models
-    stop(paste("Error: Not enough unique years with data (found", nrow(pub_counts), "). Need at least 5 for reliable modeling."))
+    mutate(Ano = as.numeric(as.character(Ano))) %>% # Garantir que 'Ano' seja numérico
+    filter(!is.na(Ano)) %>% # Filtrar novamente caso a conversão gere NAs
+    count(Ano, name = "Contagem") %>% # Contar publicações por ano # PT
+    arrange(Ano) # Ordenar por ano
+
+  # Verificar se há dados suficientes para modelagem
+  if (nrow(pub_counts) < 4) { # Reduzido, pois removemos um modelo
+    stop(paste("Erro: Não há anos únicos com dados suficientes (encontrados", nrow(pub_counts), "). Necessário pelo menos 4 para modelagem confiável.")) # PT
   }
-  
-  # --- 3. Define x (Year) and y (Count) ---
+
+  # --- 3. Definir x (Ano) e y (Contagem) ---
   x <- pub_counts$Ano
-  y <- pub_counts$Count
-  
-  cat("Data loaded and aggregated successfully.\n")
-  cat("Years (x):\n"); print(x)
-  cat("Counts (y):\n"); print(y)
-  
-  # --- 4. Fit Models ---
-  cat("\nFitting models...\n")
-  
-  # Null model (Intercept only)
-  model_null <- tryCatch({ lm(y ~ 1) }, error = function(e) { cat("Error fitting null model:", conditionMessage(e), "\n"); NULL })
-  
-  # Linear model
-  model_linear <- tryCatch({ lm(y ~ x) }, error = function(e) { cat("Error fitting linear model:", conditionMessage(e), "\n"); NULL })
-  
-  # Exponential model: y ~ a * exp(b * x)
-  # Need reasonable starting values. Use linear model slope sign for 'b'.
-  start_exp <- list(a = mean(y[x <= median(x)]), # Approx starting value
-                    b = ifelse(is.null(model_linear), 0.01, coefficients(model_linear)[2] / mean(y))) # Approx relative rate
+  y <- pub_counts$Contagem # PT
+
+  cat("Dados carregados e agregados com sucesso.\n") # PT
+  cat("Anos (x):\n"); print(x) # PT
+  cat("Contagens (y):\n"); print(y) # PT
+
+  # --- 4. Ajustar Modelos ---
+  cat("\nAjustando modelos...\n") # PT
+
+  # Modelo Nulo (Apenas Intercepto)
+  model_null <- tryCatch({ lm(y ~ 1) }, error = function(e) { cat("Erro ajustando modelo nulo:", conditionMessage(e), "\n"); NULL }) # PT
+
+  # Modelo Linear
+  model_linear <- tryCatch({ lm(y ~ x) }, error = function(e) { cat("Erro ajustando modelo linear:", conditionMessage(e), "\n"); NULL }) # PT
+
+  # Modelo Exponencial: y ~ a * exp(b * x)
+  start_exp <- list(a = mean(y[x <= median(x)]),
+                    b = ifelse(is.null(model_linear), 0.01, coefficients(model_linear)[2] / mean(y)))
   model_exponential <- tryCatch({
     nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 100))
-  }, warning = function(w){ cat("Warning fitting exponential model:", conditionMessage(w), "\n"); NULL},
-  error = function(e) { cat("Error fitting exponential model:", conditionMessage(e), "\n"); NULL })
-  
-  
-  # Logarithmic model: y ~ a + b * log(x)
-  # Ensure all x > 0 (years usually are)
-  if(any(x <= 0)) {
-    cat("Warning: Cannot fit logarithmic model because some years (x) are <= 0.\n")
-    model_logarithmic <- NULL
-  } else {
-    start_log <- list(a = ifelse(is.null(model_linear), mean(y), coefficients(model_linear)[1]),
-                      b = ifelse(is.null(model_linear), 1, coefficients(model_linear)[2]))
-    model_logarithmic <- tryCatch({
-      nls(y ~ a + b * log(x), start = start_log, control = nls.control(maxiter = 100))
-    }, warning = function(w){ cat("Warning fitting logarithmic model:", conditionMessage(w), "\n"); NULL},
-    error = function(e) { cat("Error fitting logarithmic model:", conditionMessage(e), "\n"); NULL })
-  }
-  
-  # Asymptotic model (Inverse): y ~ a + b/x
+  }, warning = function(w){ cat("Aviso ajustando modelo exponencial:", conditionMessage(w), "\n"); NULL}, # PT
+  error = function(e) { cat("Erro ajustando modelo exponencial:", conditionMessage(e), "\n"); NULL }) # PT
+
+  # <<< MODELO LOGARÍTMICO REMOVIDO >>>
+
+  # Modelo Assintótico (Inverso): y ~ a + b/x
+  model_asymptotic <- NULL # Inicializa como NULL
   if(any(x == 0)) {
-    cat("Warning: Cannot fit asymptotic model because some years (x) are 0.\n")
-    model_asymptotic <- NULL
+    cat("Aviso: Não é possível ajustar o modelo assintótico porque alguns anos (x) são 0.\n") # PT
   } else {
-    start_asymp <- list(a = ifelse(is.null(model_linear), mean(y), coefficients(model_linear)[1]),
-                        b = ifelse(is.null(model_linear), 1, coefficients(model_linear)[2]))
+    start_asymp <- list(a = ifelse(is.null(model_linear) || length(coefficients(model_linear)) < 1, mean(y), coefficients(model_linear)[1]),
+                        b = ifelse(is.null(model_linear) || length(coefficients(model_linear)) < 2, 1, coefficients(model_linear)[2]))
     model_asymptotic <- tryCatch({
       nls(y ~ a + b / x, start = start_asymp, control = nls.control(maxiter = 100))
-    }, warning = function(w){ cat("Warning fitting asymptotic model:", conditionMessage(w), "\n"); NULL},
-    error = function(e) { cat("Error fitting asymptotic model:", conditionMessage(e), "\n"); NULL })
+    }, warning = function(w){ cat("Aviso ajustando modelo assintótico:", conditionMessage(w), "\n"); NULL}, # PT
+    error = function(e) { cat("Erro ajustando modelo assintótico:", conditionMessage(e), "\n"); NULL }) # PT
   }
-  
-  
-  cat("Model fitting complete.\n")
-  
-  # --- 5. Compare Models using AICc ---
-  cat("\nComparing models using AICc:\n")
-  
-  # Create a list of successfully fitted models
+
+
+  cat("Ajuste de modelos completo.\n") # PT
+
+  # --- 5. Comparar Modelos usando AICc ---
+  cat("\nComparando modelos usando AICc:\n") # PT
+
+  # Criar uma lista de modelos ajustados com sucesso
   model_list <- Filter(Negate(is.null),
-                       list(Null = model_null,
+                       list(Nulo = model_null,         # PT
                             Linear = model_linear,
-                            Exponential = model_exponential,
-                            Logarithmic = model_logarithmic,
-                            Asymptotic = model_asymptotic))
-  
+                            Exponencial = model_exponential, # PT
+                            # Logaritmico removido
+                            Assintotico = model_asymptotic)) # PT
+
   if (length(model_list) > 0) {
-    # Calculate AICc table
-    # nobs should be the number of data points (unique years)
+    # Calcular tabela AICc
     aic_table <- tryCatch({
+      # Renomeia para corresponder aos nomes PT na lista antes de chamar AICctab
+      names(model_list) <- c("Nulo", "Linear", "Exponencial", "Assintotico")[match(names(model_list), c("Nulo", "Linear", "Exponencial", "Assintotico"))]
       bbmle::AICctab(model_list, nobs = length(x), weights = TRUE, delta = TRUE, base = TRUE)
-    }, error = function(e){ cat("Error calculating AICctab:", conditionMessage(e), "\n"); NULL})
-    
+    }, error = function(e){ cat("Erro calculando AICctab:", conditionMessage(e), "\n"); NULL}) # PT
+
     if (!is.null(aic_table)) {
       print(aic_table)
     }
   } else {
-    cat("No models were successfully fitted to compare.\n")
+    cat("Nenhum modelo foi ajustado com sucesso para comparação.\n") # PT
   }
-  
-  
-  # --- 6. Plot Data and Fitted Models ---
-  cat("\nGenerating plot...\n")
-  
-  # Define a sequence of x values for smooth curves
+
+
+  # --- 6. Plotar Dados e Modelos Ajustados ---
+  cat("\nGerando gráfico...\n") # PT
+
+  # Definir sequência de valores x para curvas suaves
   plot_x_seq <- seq(min(x), max(x), length.out = 200)
-  
-  # Set up plot area
+
+  # Configurar área do gráfico
   plot(y ~ x,
-       xlab = "Year",
-       ylab = "Number of Publications",
-       main = "Publication Trend Over Time",
-       pch = 16, # Solid circles for points
-       col = "grey40", # Dark grey points
-       cex = 1.2, # Slightly larger points
-       las = 1, # Rotate y-axis labels to be horizontal
-       ylim = c(0, max(y) * 1.1) # Ensure y-axis starts at 0 and has some space at top
+       xlab = "Ano",                            # <<< PT
+       ylab = "Número de Publicações",         # <<< PT
+       main = "Tendência de Publicações ao Longo do Tempo", # <<< PT
+       pch = 16,
+       col = "grey40",
+       cex = 1.2,
+       las = 1,
+       ylim = c(0, max(y, na.rm = TRUE) * 1.1) # Adicionado na.rm=TRUE para segurança
   )
-  grid() # Add a background grid
-  
-  # Add model lines (only if the model was fitted successfully)
-  model_colors <- c("Null" = "grey", "Linear" = "dodgerblue", "Exponential" = "red",
-                    "Logarithmic" = "darkgreen", "Asymptotic" = "purple")
-  model_lty <- c("Null"=3, "Linear"=1, "Exponential"=1, "Logarithmic"=1, "Asymptotic"=1) # Line types
+  grid() # Adicionar grade de fundo
+
+  # Adicionar linhas dos modelos (apenas se ajustados com sucesso)
+  model_colors <- c("Nulo" = "grey", "Linear" = "dodgerblue", "Exponencial" = "red",
+                    "Assintotico" = "purple") # Removido Logaritmico
+  model_lty <- c("Nulo"=3, "Linear"=1, "Exponencial"=1, "Assintotico"=1) # Removido Logaritmico
   legend_labels <- c()
   legend_colors <- c()
   legend_lty <- c()
-  
-  # Null Model
+
+  # Modelo Nulo
   if (!is.null(model_null)) {
-    abline(h = coefficients(model_null)[1], col = model_colors["Null"], lwd = 2, lty = model_lty["Null"])
-    legend_labels <- c(legend_labels, "Null (Intercept Only)")
-    legend_colors <- c(legend_colors, model_colors["Null"])
-    legend_lty <- c(legend_lty, model_lty["Null"])
+    abline(h = coefficients(model_null)[1], col = model_colors["Nulo"], lwd = 2, lty = model_lty["Nulo"])
+    legend_labels <- c(legend_labels, "Nulo (Apenas Intercepto)") # <<< PT
+    legend_colors <- c(legend_colors, model_colors["Nulo"])
+    legend_lty <- c(legend_lty, model_lty["Nulo"])
   }
-  
-  # Linear Model
+
+  # Modelo Linear
   if (!is.null(model_linear)) {
     abline(model_linear, col = model_colors["Linear"], lwd = 2, lty = model_lty["Linear"])
-    legend_labels <- c(legend_labels, "Linear")
+    legend_labels <- c(legend_labels, "Linear") # (Mantido, ou pode ser "Modelo Linear")
     legend_colors <- c(legend_colors, model_colors["Linear"])
     legend_lty <- c(legend_lty, model_lty["Linear"])
   }
-  
-  # Exponential Model
+
+  # Modelo Exponencial
   if (!is.null(model_exponential)) {
     coef_exp <- coefficients(model_exponential)
-    lines(plot_x_seq, coef_exp["a"] * exp(coef_exp["b"] * plot_x_seq), col = model_colors["Exponential"], lwd = 2, lty = model_lty["Exponential"])
-    legend_labels <- c(legend_labels, "Exponential")
-    legend_colors <- c(legend_colors, model_colors["Exponential"])
-    legend_lty <- c(legend_lty, model_lty["Exponential"])
+    lines(plot_x_seq, coef_exp["a"] * exp(coef_exp["b"] * plot_x_seq), col = model_colors["Exponencial"], lwd = 2, lty = model_lty["Exponencial"])
+    legend_labels <- c(legend_labels, "Exponencial") # <<< PT
+    legend_colors <- c(legend_colors, model_colors["Exponencial"])
+    legend_lty <- c(legend_lty, model_lty["Exponencial"])
   }
-  
-  # Logarithmic Model
-  if (!is.null(model_logarithmic)) {
-    coef_log <- coefficients(model_logarithmic)
-    # Only plot for positive x values in the sequence
-    plot_x_pos <- plot_x_seq[plot_x_seq > 0]
-    lines(plot_x_pos, coef_log["a"] + coef_log["b"] * log(plot_x_pos), col = model_colors["Logarithmic"], lwd = 2, lty = model_lty["Logarithmic"])
-    legend_labels <- c(legend_labels, "Logarithmic")
-    legend_colors <- c(legend_colors, model_colors["Logarithmic"])
-    legend_lty <- c(legend_lty, model_lty["Logarithmic"])
-  }
-  
-  # Asymptotic Model
+
+  # <<< MODELO LOGARÍTMICO REMOVIDO DA PLOTAGEM >>>
+
+  # Modelo Assintótico
   if (!is.null(model_asymptotic)) {
     coef_asymp <- coefficients(model_asymptotic)
-    # Only plot for non-zero x values in the sequence
+    # Plotar apenas para valores x não-zero na sequência
     plot_x_nonzero <- plot_x_seq[plot_x_seq != 0]
-    lines(plot_x_nonzero, coef_asymp["a"] + coef_asymp["b"] / plot_x_nonzero, col = model_colors["Asymptotic"], lwd = 2, lty = model_lty["Asymptotic"])
-    legend_labels <- c(legend_labels, "Asymptotic (Inverse)")
-    legend_colors <- c(legend_colors, model_colors["Asymptotic"])
-    legend_lty <- c(legend_lty, model_lty["Asymptotic"])
+    if (length(plot_x_nonzero) > 0) { # Verificar se ainda há pontos para plotar
+        lines(plot_x_nonzero, coef_asymp["a"] + coef_asymp["b"] / plot_x_nonzero, col = model_colors["Assintotico"], lwd = 2, lty = model_lty["Assintotico"])
+        legend_labels <- c(legend_labels, "Assintótico (Inverso)") # <<< PT
+        legend_colors <- c(legend_colors, model_colors["Assintotico"])
+        legend_lty <- c(legend_lty, model_lty["Assintotico"])
+    }
   }
-  
-  # Add Legend (only if there are models to show)
+
+  # Adicionar Legenda (apenas se houver modelos para mostrar)
   if (length(legend_labels) > 0) {
-    legend("topleft", # Position the legend
+    legend("topleft", # Posicionar a legenda
            legend = legend_labels,
            col = legend_colors,
            lty = legend_lty,
            lwd = 2,
-           bty = "n", # No box around legend
-           cex = 0.8) # Slightly smaller legend text
+           bty = "n", # Sem caixa ao redor da legenda
+           cex = 0.8)
   }
-  
-  cat("Plot generated.\n")
-  
-  # Optional: Save the plot to a file
+
+  cat("Gráfico gerado.\n") # PT
+
+  # Opcional: Salvar o gráfico em um arquivo
   # tryCatch({
   #   dev.copy(png, filename = output_plot_file, width = 8, height = 6, units = "in", res = 300)
   #   dev.off()
-  #   cat("Plot saved to:", output_plot_file, "\n")
+  #   cat("Gráfico salvo em:", output_plot_file, "\n") # PT
   # }, error = function(e) {
-  #   cat("Error saving plot:", conditionMessage(e), "\n")
+  #   cat("Erro ao salvar o gráfico:", conditionMessage(e), "\n") # PT
   # })
-  
-  
+
+
 }, error = function(e) {
-  # Catch errors during data loading or initial processing
-  cat("An error occurred during data loading or preparation:\n")
+  # Capturar erros durante carregamento ou processamento inicial
+  cat("Ocorreu um erro durante o carregamento ou preparação dos dados:\n") # PT
   cat(conditionMessage(e), "\n")
 })
 
-cat("Script finished.\n")
+cat("Script finalizado.\n") # PT
