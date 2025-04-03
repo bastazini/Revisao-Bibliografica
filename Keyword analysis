@@ -1,0 +1,279 @@
+# --- 0. Load Necessary Libraries ---
+# Ensure these packages are installed:
+# install.packages(c("readxl", "dplyr", "tidyr", "stringr", "igraph", "ggplot2", "ggrepel", "networkD3", "htmlwidgets", "RColorBrewer"))
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(ggplot2)    # Still useful for potential alternative plots
+library(ggrepel)    # Potentially useful for alternative plots
+library(networkD3)  # For Sankey diagrams
+library(htmlwidgets) # For saving networkD3 plots
+library(RColorBrewer) # For color palettes
+
+# --- Parameters ---
+excel_file <- "bibliographic_data_output.xlsx" # Input Excel file name
+keyword_column <- "palavras-chave"       # Name of the column with keywords in your Excel file
+year_column <- "Ano"                    # Name of the column with publication year
+keyword_separator <- ","                # How keywords are separated - ADJUST IF NEEDED!
+min_cooccurrence <- 2                   # Network: Minimum times two keywords must co-occur
+min_keyword_freq_network <- 3           # Network: Minimum node degree (connections) to include
+num_top_keywords_trend <- 15            # Sankey/Trend: Number of top keywords to show
+output_network_plot <- "keyword_network_enhanced.png" # File name for network plot
+output_sankey_plot <- "keyword_sankey_trends.html"  # File name for Sankey plot (HTML)
+
+# --- 1. Load and Prepare Data ---
+cat("Loading data from:", excel_file, "\n")
+tryCatch({
+  bib_data <- read_excel(excel_file, sheet = 1)
+
+  # Check for necessary columns
+  if (!keyword_column %in% names(bib_data)) stop("Keyword column '", keyword_column, "' not found.")
+  if (!year_column %in% names(bib_data)) stop("Year column '", year_column, "' not found.")
+
+  # Select relevant columns, create ID, filter NAs, clean year
+  keywords_df <- bib_data %>%
+    mutate(paper_id = row_number()) %>%
+    select(paper_id, !!sym(keyword_column), !!sym(year_column)) %>%
+    rename(keywords = !!sym(keyword_column), year = !!sym(year_column)) %>%
+    filter(!is.na(keywords), nchar(trimws(keywords)) > 0, !is.na(year)) %>%
+    mutate(year = as.numeric(as.character(year))) %>%
+    filter(!is.na(year))
+
+  if(nrow(keywords_df) == 0) stop("No valid data after filtering for keywords and years.")
+  cat("Data loaded. Processing", nrow(keywords_df), "papers.\n")
+
+  # --- 2. Clean and Split Keywords ---
+  cat("Cleaning and splitting keywords...\n")
+  keywords_long <- keywords_df %>%
+    mutate(keyword_list = str_split(keywords, fixed(keyword_separator))) %>%
+    unnest(keyword_list) %>%
+    mutate(keyword = tolower(trimws(keyword_list))) %>%
+    filter(nchar(keyword) > 0) %>%
+    select(paper_id, year, keyword)
+
+  if(nrow(keywords_long) == 0) stop("No valid keywords found after splitting.")
+  cat("Total keyword instances:", nrow(keywords_long), "; Unique keywords:", n_distinct(keywords_long$keyword), "\n")
+
+  # --- PART 1: Keyword Co-occurrence Network ---
+  cat("\n--- Building Keyword Co-occurrence Network ---\n")
+
+  # --- 3. Create Keyword Pairs ---
+  cat("Generating keyword pairs...\n")
+  keyword_pairs_list <- keywords_long %>%
+      group_by(paper_id) %>%
+      summarise(unique_keywords = list(unique(keyword)), .groups = 'drop') %>%
+      filter(sapply(unique_keywords, length) >= 2) %>%
+      mutate(pair_df = lapply(unique_keywords, function(kw_vector) {
+          pair_matrix <- combn(kw_vector, 2)
+          tibble(keyword1 = pair_matrix[1, ], keyword2 = pair_matrix[2, ])
+      })) %>%
+      select(paper_id, pair_df)
+
+  keyword_pairs_unnested <- keyword_pairs_list %>% unnest(pair_df)
+
+  # --- 4. Standardize & Count Pairs ---
+  cat("Counting co-occurrences...\n")
+  keyword_pair_counts <- keyword_pairs_unnested %>%
+    mutate(
+      temp_kw1 = pmin(keyword1, keyword2),
+      temp_kw2 = pmax(keyword1, keyword2)
+    ) %>%
+    select(keyword1 = temp_kw1, keyword2 = temp_kw2) %>%
+    count(keyword1, keyword2, name = "weight") %>%
+    filter(weight >= min_cooccurrence)
+
+  # --- Initialize graph objects ---
+  graph_obj <- NULL
+  graph_plot_obj <- NULL
+  communities <- NULL
+
+  if(nrow(keyword_pair_counts) == 0) {
+      cat("Warning: No keyword pairs met min co-occurrence threshold. Skipping network.\n")
+  } else {
+      cat("Found", nrow(keyword_pair_counts), "pairs meeting threshold.\n")
+
+      # --- 5. Create Graph ---
+      cat("Creating graph object...\n")
+      graph_obj <- graph_from_data_frame(keyword_pair_counts, directed = FALSE)
+
+      # --- 6. Filter & Enhance Graph ---
+      cat("Filtering graph & detecting communities...\n")
+      if (!is.null(graph_obj) && vcount(graph_obj) > 0) {
+          node_degrees <- degree(graph_obj, mode = "all")
+          nodes_to_keep <- names(node_degrees[node_degrees >= min_keyword_freq_network])
+          graph_filtered <- induced_subgraph(graph_obj, V(graph_obj)$name %in% nodes_to_keep)
+
+          if (vcount(graph_filtered) > 0 && ecount(graph_filtered) > 0) {
+              # --- Community Detection ---
+              communities <- cluster_louvain(graph_filtered)
+              num_communities <- length(unique(membership(communities)))
+              cat("Detected", num_communities, "communities.\n")
+
+              # --- Node Attributes ---
+              keyword_total_freq <- keywords_long %>% count(keyword, name = "total_freq")
+              node_data <- tibble(name = V(graph_filtered)$name) %>%
+                  left_join(keyword_total_freq, by = c("name" = "keyword")) %>%
+                  mutate(total_freq = ifelse(is.na(total_freq), 1, total_freq))
+
+              V(graph_filtered)$size <- log1p(node_data$total_freq) * 2.5 # Slightly larger base size
+              V(graph_filtered)$label <- V(graph_filtered)$name
+              V(graph_filtered)$community <- membership(communities)
+
+              graph_plot_obj <- graph_filtered # Assign final graph for plotting
+              cat("Filtered graph ready:", vcount(graph_plot_obj), "nodes,", ecount(graph_plot_obj), "edges.\n")
+
+          } else {
+              cat("Warning: Graph empty after filtering. Skipping network plot.\n")
+              graph_plot_obj <- NULL
+          }
+      } else {
+          cat("Warning: Initial graph empty. Skipping network plot.\n")
+          graph_plot_obj <- NULL
+      }
+  }
+
+  # --- 7. Visualize Enhanced Network ---
+  if (!is.null(graph_plot_obj)) {
+    cat("Generating enhanced network plot (saving to", output_network_plot, ")...\n")
+
+    # Set plot margins
+    par(mar=c(1, 1, 1, 1)) # Reduce margins to give plot more space
+
+    # Generate colors based on communities
+    num_communities <- length(unique(V(graph_plot_obj)$community))
+    if (num_communities > 8) { # Use a palette suitable for many colors
+        community_colors <- colorRampPalette(brewer.pal(8, "Set2"))(num_communities)
+    } else if (num_communities > 2) { # Use a standard qualitative palette
+        community_colors <- brewer.pal(num_communities, "Set2")
+    } else if (num_communities == 2) {
+        community_colors <- brewer.pal(3, "Set2")[1:2] # Get 2 distinct colors
+    } else {
+        community_colors <- brewer.pal(3, "Set2")[1] # Single color
+    }
+    V(graph_plot_obj)$color <- community_colors[V(graph_plot_obj)$community]
+
+    # Choose layout
+    # layout_algo <- layout_with_fr(graph_plot_obj) # Fruchterman-Reingold
+    layout_algo <- layout_nicely(graph_plot_obj) # Often good balance
+
+    # Save plot
+    png(output_network_plot, width = 14, height = 11, units = "in", res = 300)
+    plot(graph_plot_obj,
+         layout = layout_algo,
+         vertex.frame.color = "grey40", # Darker frame
+         vertex.label.color = "black",
+         vertex.label.cex = 0.65,       # Smaller labels
+         vertex.label.dist = 0.4,        # Labels closer to node
+         edge.color = rgb(0.5, 0.5, 0.5, alpha = 0.4), # Semi-transparent grey edges
+         edge.curved = 0.1,             # Slight curve to edges
+         edge.width = E(graph_plot_obj)$weight / max(E(graph_plot_obj)$weight) * 2.5 + 0.3, # Adjust edge scaling
+         main = "Keyword Co-occurrence Network (Colored by Community)",
+         sub = paste("Nodes sized by log(frequency), min degree >=", min_keyword_freq_network)
+         )
+    # Add legend for communities if useful (many communities make legend large)
+    if (num_communities <= 8 && num_communities > 1) {
+        legend("bottomleft", legend = paste("Community", 1:num_communities),
+               fill = community_colors, bty = "n", cex = 0.8)
+    }
+    dev.off()
+    par(mar=c(5.1, 4.1, 4.1, 2.1)) # Reset default margins
+    cat("Enhanced network plot saved.\n")
+  } else {
+      cat("Skipping enhanced network plot generation.\n")
+  }
+
+
+  # --- PART 2: Keyword Trend Analysis (Sankey Diagram) ---
+  cat("\n--- Generating Keyword Trend Sankey Diagram ---\n")
+
+  # --- 8. Count Keywords per Year ---
+  cat("Counting keyword frequency per year...\n")
+  keyword_yearly_counts <- keywords_long %>%
+    count(year, keyword, name = "yearly_count") %>%
+    filter(yearly_count > 0) # Sankey only needs non-zero counts
+
+  # --- 9. Identify Top Keywords Overall ---
+  cat("Identifying top", num_top_keywords_trend, "keywords overall...\n")
+  top_keywords <- keywords_long %>%
+    count(keyword, sort = TRUE, name = "total_count") %>%
+    slice_head(n = num_top_keywords_trend) %>%
+    pull(keyword)
+
+  cat("Top keywords selected:", paste(top_keywords, collapse = ", "), "\n")
+
+  # --- 10. Prepare Data for Sankey ---
+  # Filter yearly counts to include only top keywords and non-zero counts
+  sankey_data <- keyword_yearly_counts %>%
+    filter(keyword %in% top_keywords)
+
+  if(nrow(sankey_data) == 0) {
+      cat("Warning: No non-zero counts found for the top keywords. Skipping Sankey diagram.\n")
+  } else {
+      cat("Preparing data for Sankey diagram...\n")
+      # Create Nodes dataframe
+      year_nodes <- unique(as.character(sankey_data$year))
+      keyword_nodes <- unique(sankey_data$keyword)
+      all_nodes <- c(year_nodes, keyword_nodes)
+      nodes_df <- data.frame(name = all_nodes, stringsAsFactors = FALSE) %>%
+                    mutate(id = row_number() - 1) # 0-based index
+
+      # Create Links dataframe
+      links_df <- sankey_data %>%
+        # Convert year to character to match nodes_df$name
+        mutate(source_name = as.character(year), target_name = keyword) %>%
+        # Map names to 0-based IDs
+        mutate(
+          source = match(source_name, nodes_df$name) - 1,
+          target = match(target_name, nodes_df$name) - 1,
+          value = yearly_count,
+          group = target_name # Color links by target keyword
+        ) %>%
+        select(source, target, value, group)
+
+      # Check if links were successfully created
+       if(nrow(links_df) == 0 || any(is.na(links_df$source)) || any(is.na(links_df$target))) {
+           cat("Warning: Failed to create valid links for Sankey diagram (check matching?). Skipping.\n")
+       } else {
+           # --- 11. Generate Sankey Diagram ---
+           cat("Generating Sankey plot (saving to", output_sankey_plot, ")...\n")
+
+           sankey_plot <- sankeyNetwork(
+               Links = links_df,
+               Nodes = nodes_df,
+               Source = "source",
+               Target = "target",
+               Value = "value",
+               NodeID = "name",
+               NodeGroup = NULL, # Could group nodes by type (year/keyword) if desired
+               LinkGroup = "group", # Color links by keyword
+               units = "mentions",
+               fontSize = 11,
+               nodeWidth = 30,
+               nodePadding = 15,
+               margin = list(top=20, bottom=10) # Add margin for title
+               )
+
+           # Add a title (optional)
+           sankey_plot <- htmlwidgets::prependContent(sankey_plot,
+               htmltools::tags$h3("Keyword Mentions per Year (Top", num_top_keywords_trend, "Keywords)",
+                                  style = "text-align:center; margin-bottom: 0px;"))
+
+
+           # Save the Sankey plot as an HTML file
+           saveWidget(sankey_plot, file = output_sankey_plot, selfcontained = TRUE)
+           cat("Sankey diagram saved successfully.\n")
+       }
+   }
+
+# Error handling
+}, error = function(e) {
+  cat("\n----------------------\n")
+  cat("An error occurred:\n")
+  cat(conditionMessage(e), "\n")
+  cat("----------------------\n")
+})
+
+cat("\nScript finished.\n")
