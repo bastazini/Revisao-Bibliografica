@@ -1,3 +1,152 @@
+###versao final (testar)
+# Load necessary libraries
+library(RefManageR)
+library(dplyr)
+library(writexl)
+library(stringr) # Added for string manipulation
+
+# Function to safely extract fields from the data frame created by as.data.frame
+safe_extract <- function(data, field) {
+  if (field %in% names(data)) {
+    return(data[[field]])
+  } else {
+    # Return NA vector of the correct length if field doesn't exist
+    return(rep(NA_character_, nrow(data)))
+  }
+}
+
+# Function to process BibTeX file
+bib_to_dataframe <- function(bib_file_path) {
+  tryCatch({
+    # Read the BibTeX file - check=FALSE is important for non-standard files
+    entries <- RefManageR::ReadBib(bib_file_path, check = FALSE)
+    # --- Count and report the number of entries ---
+    num_entries <- length(entries)
+    cat("----> Number of entries (papers/records) found:", num_entries, "\n")
+    # ---------------------------------------------
+    
+    # Check if any entries were read
+    if (length(entries) == 0) {
+      cat("Warning: No valid BibTeX entries found in", bib_file_path, "\n")
+      return(NULL) # Return NULL if no entries
+    }
+    
+    # Convert to data frame
+    df <- as.data.frame(entries)
+    
+    # Process the data frame
+    df_processed <- df %>%
+      mutate(
+        # --- Estudios: Attempt to extract Rayyan status from 'annote' field ---
+        # This looks for '| RAYYAN-INCLUSION: {..."Status"}}'
+        # Adjust the regex if your pattern is different
+        # If 'annote' or the pattern is missing, it will result in NA
+        Estudos = str_match(safe_extract(df, "annote"),
+                            "RAYYAN-INCLUSION:\\s*\\{.*?=>\"(.*?)\"\\}")[, 2],
+        
+        Título = safe_extract(df, "title"),
+        Autores = safe_extract(df, "author"),
+        
+        # --- Primeiro Autor: Extract the full name string of the first author ---
+        `Primeiro Autor` = sapply(safe_extract(df, "author"), function(authors_str) {
+          if (is.na(authors_str) || nchar(authors_str) == 0) {
+            return(NA_character_)
+          } else {
+            # Split by ' and ' and take the first element
+            first_author <- strsplit(authors_str, " and ")[[1]][1]
+            return(trimws(first_author)) # Remove leading/trailing whitespace
+          }
+        }),
+        
+        `Tipo de Publicação` = safe_extract(df, "entrytype"),
+        Ano = safe_extract(df, "year"),
+        Resumo = safe_extract(df, "abstract"),
+        Revista = safe_extract(df, "journal"), # Or 'booktitle' for chapters/proceedings
+        
+        # --- URL: Extract the first URL if multiple are present ---
+        url = sapply(safe_extract(df, "url"), function(url_str) {
+          if (is.na(url_str) || nchar(url_str) == 0) {
+            return(NA_character_)
+          } else {
+            # Split by space and take the first element
+            first_url <- strsplit(url_str, "\\s+")[[1]][1]
+            return(first_url)
+          }
+        }),
+        
+        língua = safe_extract(df, "language"),
+        `palavras-chave` = safe_extract(df, "keywords"),
+        DOI = safe_extract(df, "doi"),
+        
+        # --- Add other potentially useful fields ---
+        Volume = safe_extract(df, "volume"),
+        Numero = safe_extract(df, "number"),
+        Paginas = safe_extract(df, "pages"),
+        ISSN = safe_extract(df, "issn")
+        
+        # Add any other fields you need here using safe_extract(df, "fieldname")
+      ) %>%
+      # --- Select and order the final columns ---
+      select(
+        Estudos,
+        Título,
+        Autores,
+        `Primeiro Autor`,
+        `Tipo de Publicação`,
+        Ano,
+        Resumo,
+        Revista, # Note: This will be NA for entry types without a 'journal' field (e.g., book)
+        url,
+        língua,
+        `palavras-chave`,
+        DOI,
+        Volume,
+        Numero,
+        Paginas,
+        ISSN
+        # Add any other selected columns here
+      )
+    
+    return(df_processed)
+    
+  }, error = function(e) {
+    cat("Error processing BibTeX file:", conditionMessage(e), "\n")
+    # Print more details for debugging if needed
+    # print(e)
+    return(NULL) # Return NULL on error
+  })
+}
+
+# Main part of the script
+main <- function() {
+  bib_file <- "teste.bib" # Your input BibTeX file name
+  output_excel <- "bibliographic_data_output.xlsx" # Your output Excel file name
+  
+  cat("Processing BibTeX file:", bib_file, "\n")
+  df_final <- bib_to_dataframe(bib_file)
+  
+  if (!is.null(df_final) && nrow(df_final) > 0) {
+    cat("BibTeX processing successful. Writing data to Excel...\n")
+    tryCatch({
+      writexl::write_xlsx(df_final, output_excel)
+      cat("Data successfully written to", output_excel, "\n")
+    }, error = function(e) {
+      cat("Error writing to Excel file:", conditionMessage(e), "\n")
+    })
+  } else if (!is.null(df_final) && nrow(df_final) == 0) {
+    cat("Processing finished, but the resulting data frame has 0 rows.\n")
+    cat("This might happen if the BibTeX file was empty or entries were invalid.\n")
+  } else {
+    cat("BibTeX processing failed or returned no data. Excel file not created.\n")
+  }
+}
+
+# Run the main function
+main()
+
+
+
+#########################Versão 1
 #define the path of the file 
 your_file.bib= 
  
