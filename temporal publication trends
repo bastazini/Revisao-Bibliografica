@@ -1,0 +1,222 @@
+# --- 1. Load Necessary Libraries ---
+# install.packages("readxl") # Run this if you haven't installed it before
+# install.packages("dplyr")  # Run this if you haven't installed it before
+# install.packages("bbmle") # Run this if you haven't installed it before
+
+library(readxl)
+library(dplyr)
+library(bbmle)
+
+# --- 2. Load and Prepare Data ---
+excel_file <- "bibliographic_data_output.xlsx" # Make sure this file is in your working directory or provide the full path
+output_plot_file <- "publication_trend_plot.png" # Optional: File name to save the plot
+
+tryCatch({
+  # Read the sheet containing the data (assuming it's the first sheet)
+  bib_data <- read_excel(excel_file, sheet = 1)
+  
+  # Check if 'Ano' column exists
+  if (!"Ano" %in% names(bib_data)) {
+    stop("Error: Column 'Ano' not found in the Excel file.")
+  }
+  
+  # Remove rows where 'Ano' is NA, and ensure 'Ano' is numeric
+  pub_counts <- bib_data %>%
+    filter(!is.na(Ano)) %>%
+    mutate(Ano = as.numeric(as.character(Ano))) %>% # Ensure 'Ano' is numeric
+    filter(!is.na(Ano)) %>% # Filter again in case conversion created NAs
+    count(Ano, name = "Count") %>% # Count publications per year
+    arrange(Ano) # Sort by year (good practice)
+  
+  # Check if we have enough data points for modeling
+  if (nrow(pub_counts) < 5) { # Need at least a few points for these models
+    stop(paste("Error: Not enough unique years with data (found", nrow(pub_counts), "). Need at least 5 for reliable modeling."))
+  }
+  
+  # --- 3. Define x (Year) and y (Count) ---
+  x <- pub_counts$Ano
+  y <- pub_counts$Count
+  
+  cat("Data loaded and aggregated successfully.\n")
+  cat("Years (x):\n"); print(x)
+  cat("Counts (y):\n"); print(y)
+  
+  # --- 4. Fit Models ---
+  cat("\nFitting models...\n")
+  
+  # Null model (Intercept only)
+  model_null <- tryCatch({ lm(y ~ 1) }, error = function(e) { cat("Error fitting null model:", conditionMessage(e), "\n"); NULL })
+  
+  # Linear model
+  model_linear <- tryCatch({ lm(y ~ x) }, error = function(e) { cat("Error fitting linear model:", conditionMessage(e), "\n"); NULL })
+  
+  # Exponential model: y ~ a * exp(b * x)
+  # Need reasonable starting values. Use linear model slope sign for 'b'.
+  start_exp <- list(a = mean(y[x <= median(x)]), # Approx starting value
+                    b = ifelse(is.null(model_linear), 0.01, coefficients(model_linear)[2] / mean(y))) # Approx relative rate
+  model_exponential <- tryCatch({
+    nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 100))
+  }, warning = function(w){ cat("Warning fitting exponential model:", conditionMessage(w), "\n"); NULL},
+  error = function(e) { cat("Error fitting exponential model:", conditionMessage(e), "\n"); NULL })
+  
+  
+  # Logarithmic model: y ~ a + b * log(x)
+  # Ensure all x > 0 (years usually are)
+  if(any(x <= 0)) {
+    cat("Warning: Cannot fit logarithmic model because some years (x) are <= 0.\n")
+    model_logarithmic <- NULL
+  } else {
+    start_log <- list(a = ifelse(is.null(model_linear), mean(y), coefficients(model_linear)[1]),
+                      b = ifelse(is.null(model_linear), 1, coefficients(model_linear)[2]))
+    model_logarithmic <- tryCatch({
+      nls(y ~ a + b * log(x), start = start_log, control = nls.control(maxiter = 100))
+    }, warning = function(w){ cat("Warning fitting logarithmic model:", conditionMessage(w), "\n"); NULL},
+    error = function(e) { cat("Error fitting logarithmic model:", conditionMessage(e), "\n"); NULL })
+  }
+  
+  # Asymptotic model (Inverse): y ~ a + b/x
+  if(any(x == 0)) {
+    cat("Warning: Cannot fit asymptotic model because some years (x) are 0.\n")
+    model_asymptotic <- NULL
+  } else {
+    start_asymp <- list(a = ifelse(is.null(model_linear), mean(y), coefficients(model_linear)[1]),
+                        b = ifelse(is.null(model_linear), 1, coefficients(model_linear)[2]))
+    model_asymptotic <- tryCatch({
+      nls(y ~ a + b / x, start = start_asymp, control = nls.control(maxiter = 100))
+    }, warning = function(w){ cat("Warning fitting asymptotic model:", conditionMessage(w), "\n"); NULL},
+    error = function(e) { cat("Error fitting asymptotic model:", conditionMessage(e), "\n"); NULL })
+  }
+  
+  
+  cat("Model fitting complete.\n")
+  
+  # --- 5. Compare Models using AICc ---
+  cat("\nComparing models using AICc:\n")
+  
+  # Create a list of successfully fitted models
+  model_list <- Filter(Negate(is.null),
+                       list(Null = model_null,
+                            Linear = model_linear,
+                            Exponential = model_exponential,
+                            Logarithmic = model_logarithmic,
+                            Asymptotic = model_asymptotic))
+  
+  if (length(model_list) > 0) {
+    # Calculate AICc table
+    # nobs should be the number of data points (unique years)
+    aic_table <- tryCatch({
+      bbmle::AICctab(model_list, nobs = length(x), weights = TRUE, delta = TRUE, base = TRUE)
+    }, error = function(e){ cat("Error calculating AICctab:", conditionMessage(e), "\n"); NULL})
+    
+    if (!is.null(aic_table)) {
+      print(aic_table)
+    }
+  } else {
+    cat("No models were successfully fitted to compare.\n")
+  }
+  
+  
+  # --- 6. Plot Data and Fitted Models ---
+  cat("\nGenerating plot...\n")
+  
+  # Define a sequence of x values for smooth curves
+  plot_x_seq <- seq(min(x), max(x), length.out = 200)
+  
+  # Set up plot area
+  plot(y ~ x,
+       xlab = "Year",
+       ylab = "Number of Publications",
+       main = "Publication Trend Over Time",
+       pch = 16, # Solid circles for points
+       col = "grey40", # Dark grey points
+       cex = 1.2, # Slightly larger points
+       las = 1, # Rotate y-axis labels to be horizontal
+       ylim = c(0, max(y) * 1.1) # Ensure y-axis starts at 0 and has some space at top
+  )
+  grid() # Add a background grid
+  
+  # Add model lines (only if the model was fitted successfully)
+  model_colors <- c("Null" = "grey", "Linear" = "dodgerblue", "Exponential" = "red",
+                    "Logarithmic" = "darkgreen", "Asymptotic" = "purple")
+  model_lty <- c("Null"=3, "Linear"=1, "Exponential"=1, "Logarithmic"=1, "Asymptotic"=1) # Line types
+  legend_labels <- c()
+  legend_colors <- c()
+  legend_lty <- c()
+  
+  # Null Model
+  if (!is.null(model_null)) {
+    abline(h = coefficients(model_null)[1], col = model_colors["Null"], lwd = 2, lty = model_lty["Null"])
+    legend_labels <- c(legend_labels, "Null (Intercept Only)")
+    legend_colors <- c(legend_colors, model_colors["Null"])
+    legend_lty <- c(legend_lty, model_lty["Null"])
+  }
+  
+  # Linear Model
+  if (!is.null(model_linear)) {
+    abline(model_linear, col = model_colors["Linear"], lwd = 2, lty = model_lty["Linear"])
+    legend_labels <- c(legend_labels, "Linear")
+    legend_colors <- c(legend_colors, model_colors["Linear"])
+    legend_lty <- c(legend_lty, model_lty["Linear"])
+  }
+  
+  # Exponential Model
+  if (!is.null(model_exponential)) {
+    coef_exp <- coefficients(model_exponential)
+    lines(plot_x_seq, coef_exp["a"] * exp(coef_exp["b"] * plot_x_seq), col = model_colors["Exponential"], lwd = 2, lty = model_lty["Exponential"])
+    legend_labels <- c(legend_labels, "Exponential")
+    legend_colors <- c(legend_colors, model_colors["Exponential"])
+    legend_lty <- c(legend_lty, model_lty["Exponential"])
+  }
+  
+  # Logarithmic Model
+  if (!is.null(model_logarithmic)) {
+    coef_log <- coefficients(model_logarithmic)
+    # Only plot for positive x values in the sequence
+    plot_x_pos <- plot_x_seq[plot_x_seq > 0]
+    lines(plot_x_pos, coef_log["a"] + coef_log["b"] * log(plot_x_pos), col = model_colors["Logarithmic"], lwd = 2, lty = model_lty["Logarithmic"])
+    legend_labels <- c(legend_labels, "Logarithmic")
+    legend_colors <- c(legend_colors, model_colors["Logarithmic"])
+    legend_lty <- c(legend_lty, model_lty["Logarithmic"])
+  }
+  
+  # Asymptotic Model
+  if (!is.null(model_asymptotic)) {
+    coef_asymp <- coefficients(model_asymptotic)
+    # Only plot for non-zero x values in the sequence
+    plot_x_nonzero <- plot_x_seq[plot_x_seq != 0]
+    lines(plot_x_nonzero, coef_asymp["a"] + coef_asymp["b"] / plot_x_nonzero, col = model_colors["Asymptotic"], lwd = 2, lty = model_lty["Asymptotic"])
+    legend_labels <- c(legend_labels, "Asymptotic (Inverse)")
+    legend_colors <- c(legend_colors, model_colors["Asymptotic"])
+    legend_lty <- c(legend_lty, model_lty["Asymptotic"])
+  }
+  
+  # Add Legend (only if there are models to show)
+  if (length(legend_labels) > 0) {
+    legend("topleft", # Position the legend
+           legend = legend_labels,
+           col = legend_colors,
+           lty = legend_lty,
+           lwd = 2,
+           bty = "n", # No box around legend
+           cex = 0.8) # Slightly smaller legend text
+  }
+  
+  cat("Plot generated.\n")
+  
+  # Optional: Save the plot to a file
+  # tryCatch({
+  #   dev.copy(png, filename = output_plot_file, width = 8, height = 6, units = "in", res = 300)
+  #   dev.off()
+  #   cat("Plot saved to:", output_plot_file, "\n")
+  # }, error = function(e) {
+  #   cat("Error saving plot:", conditionMessage(e), "\n")
+  # })
+  
+  
+}, error = function(e) {
+  # Catch errors during data loading or initial processing
+  cat("An error occurred during data loading or preparation:\n")
+  cat(conditionMessage(e), "\n")
+})
+
+cat("Script finished.\n")
