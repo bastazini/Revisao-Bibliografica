@@ -2,7 +2,7 @@
 # Ensure these packages are installed:
 # install.packages(c("readxl", "dplyr", "tidyr", "stringr", "igraph",
 #                    "ggplot2", "ggrepel", "networkD3", "htmlwidgets",
-#                    "RColorBrewer", "webshot2", "magick")) # magick helps create PDF from PNG
+#                    "RColorBrewer", "webshot2", "magick"))
 
 library(readxl)
 library(dplyr)
@@ -22,19 +22,70 @@ excel_file <- "bibliographic_data_output.xlsx" # Input Excel file name
 keyword_column <- "palavras-chave"       # Name of the column with keywords (Portuguese default)
 year_column <- "Ano"                    # Name of the column with publication year (Portuguese default)
 keyword_separator <- ","                # How keywords are separated - ADJUST IF NEEDED!
-min_cooccurrence <- 2                   # Network: Minimum times two keywords must co-occur
-min_keyword_freq_network <- 3           # Network: Minimum node degree (connections) to include
+min_cooccurrence <- 5                   # Network: Minimum times two keywords must co-occur to form an edge
+min_keyword_freq_network <- 3           # Network: Minimum node degree (connections) to keep a keyword in the network/map
 num_top_keywords_trend <- 15            # Sankey/Trend: Number of top keywords to show
 
-# --- Output Files (Separate PDFs) ---
-output_network_pdf <- "keyword_network_PT.pdf"           # <<< Network PDF
-output_thematic_map_pdf <- "keyword_thematic_map_PT.pdf" # <<< Thematic Map PDF
-output_sankey_pdf <- "keyword_sankey_trends_PT.pdf"      # <<< Sankey static PDF
-output_sankey_html <- "keyword_sankey_trends_PT.html"    # <<< Sankey interactive HTML
+# --- Keywords to Remove ---
+# Add any other generic/undesired words (lowercase) to this list
+keywords_to_remove <- c(
+  "article",
+  "artigo",
+  "paper",
+  "review",
+  "study",
+  "estudo",
+  "research", # Example: Add more if needed
+  "journal"
+  # Adicione mais palavras comuns que não são palavras-chave reais aqui
+)
 
-# --- 1. Load and Prepare Data ---
-cat("Carregando dados de:", excel_file, "\n") # PT
+# --- Specific Keyword Concatenations ---
+# Define pairs where the first element should be replaced by the second
+# Format: list(c("term_to_replace", "replacement_term"), c("another_to_replace", "replacement"))
+keyword_replacements <- list(
+  c("land use change", "land use"),
+  c("mudança no uso da terra", "uso da terra"), # Example in Portuguese
+  c("uso e cobertura da terra", "uso da terra") # Example combining cover
+  # Add more pairs if needed, e.g., c("remote sensing", "sensoriamento remoto")
+)
+
+
+# --- Output Files (Separate PDFs/HTML) ---
+output_network_pdf <- "rede_palavras_chave_PT.pdf"          # Network PDF
+output_thematic_map_pdf <- "mapa_tematico_palavras_chave_PT.pdf" # Thematic Map PDF
+output_sankey_pdf <- "tendencia_palavras_chave_sankey_PT.pdf"     # Sankey static PDF
+output_sankey_html <- "tendencia_palavras_chave_sankey_PT.html"   # Sankey interactive HTML
+
+# --- Helper Function for Callon's Metrics ---
+# (Function remains the same as before)
+calculate_callon_metrics <- function(graph, communities_object, cluster_id) {
+  cluster_nodes_indices <- which(membership(communities_object) == cluster_id)
+  cluster_nodes_names <- V(graph)$name[cluster_nodes_indices]
+  if (length(cluster_nodes_indices) == 0) {
+    return(list(centrality = 0, density = 0, n_keywords = 0))
+  }
+  n_nodes_in_cluster <- length(cluster_nodes_indices)
+  subgraph <- induced_subgraph(graph, cluster_nodes_indices)
+  internal_weight_sum <- sum(E(subgraph)$weight, na.rm = TRUE)
+  density <- internal_weight_sum
+  external_weight_sum <- 0
+  all_incident_edges <- E(graph)[inc(cluster_nodes_indices)]
+  if (length(all_incident_edges) > 0) {
+    ends_matrix <- ends(graph, all_incident_edges)
+    is_external <- (membership(communities_object)[ends_matrix[,1]] != cluster_id) | (membership(communities_object)[ends_matrix[,2]] != cluster_id)
+    external_edges <- all_incident_edges[is_external]
+    external_weight_sum <- sum(E(graph)$weight[external_edges], na.rm = TRUE)
+  }
+  centrality <- external_weight_sum
+  return(list(centrality = centrality, density = density, n_keywords = n_nodes_in_cluster))
+}
+
+
+# --- Main Script Body ---
 tryCatch({
+  # --- 1. Load and Prepare Data ---
+  cat("Carregando dados de:", excel_file, "\n") # PT
   bib_data <- read_excel(excel_file, sheet = 1)
   
   if (!keyword_column %in% names(bib_data)) stop("Coluna de palavras-chave '", keyword_column, "' não encontrada.") # PT
@@ -51,37 +102,80 @@ tryCatch({
   if(nrow(keywords_df) == 0) stop("Nenhum dado válido após filtrar por palavras-chave e anos.") # PT
   cat("Dados carregados. Processando", nrow(keywords_df), "artigos.\n") # PT
   
-  # --- 2. Clean and Split Keywords ---
-  cat("Limpando e separando palavras-chave...\n") # PT
-  keywords_long <- keywords_df %>%
+  # --- 2. Clean, Split, Filter, and Concatenate Keywords --- # <<< MODIFIED SECTION >>>
+  cat("Limpando, separando, filtrando e concatenando palavras-chave...\n") # PT
+  
+  # Initial splitting and tidying
+  keywords_long_raw <- keywords_df %>%
     mutate(keyword_list = str_split(keywords, fixed(keyword_separator))) %>%
     unnest(keyword_list) %>%
-    mutate(keyword = tolower(trimws(keyword_list))) %>%
-    filter(nchar(keyword) > 0) %>%
-    select(paper_id, year, keyword)
+    mutate(keyword = str_trim(keyword_list)) %>% # Trim whitespace first
+    filter(nchar(keyword) > 0) %>%              # Remove empty strings resulting from split/trim
+    mutate(keyword = tolower(keyword)) %>%       # Convert to lowercase AFTER trimming
+    select(paper_id, year, keyword) %>%
+    distinct(paper_id, year, keyword) # Ensure unique keyword per paper
   
-  if(nrow(keywords_long) == 0) stop("Nenhuma palavra-chave válida encontrada após separação.") # PT
-  cat("Total de instâncias de palavras-chave:", nrow(keywords_long), "; Palavras-chave únicas:", n_distinct(keywords_long$keyword), "\n") # PT
+  cat(" - Palavras-chave únicas por artigo (antes de remover/concatenar):", nrow(keywords_long_raw), "\n")
+  
+  # >>> Data Cleaning Step 1: Remove Generic Keywords <<<
+  cat(" - Removendo palavras-chave genéricas predefinidas:", paste(keywords_to_remove, collapse=", "), "\n")
+  n_antes_remocao <- nrow(keywords_long_raw)
+  keywords_long_cleaned <- keywords_long_raw %>%
+    filter(!keyword %in% keywords_to_remove)
+  n_depois_remocao <- nrow(keywords_long_cleaned)
+  cat("   > Removidas", n_antes_remocao - n_depois_remocao, "instâncias de palavras-chave genéricas.\n") # PT
+  
+  # >>> Data Cleaning Step 2: Concatenate Specific Keywords <<<
+  cat(" - Concatenando termos específicos...\n")
+  keywords_long_concatenated <- keywords_long_cleaned
+  if (length(keyword_replacements) > 0) {
+    for (replacement_pair in keyword_replacements) {
+      term_to_replace <- replacement_pair[1]
+      replacement_term <- replacement_pair[2]
+      cat("   > Substituindo '", term_to_replace, "' por '", replacement_term, "'...\n", sep="")
+      n_before_replace <- sum(keywords_long_concatenated$keyword == term_to_replace)
+      keywords_long_concatenated <- keywords_long_concatenated %>%
+        mutate(keyword = ifelse(keyword == term_to_replace, replacement_term, keyword))
+      n_after_replace <- sum(keywords_long_concatenated$keyword == term_to_replace) # Should be 0
+      n_replaced <- n_before_replace - n_after_replace
+      cat("     >>", n_replaced, "ocorrências substituídas.\n")
+    }
+    # After concatenation, we might have duplicates per paper again, apply distinct
+    keywords_long_concatenated <- keywords_long_concatenated %>%
+      distinct(paper_id, year, keyword)
+    cat("   > Readicionado 'distinct' após concatenação.\n")
+  } else {
+    cat("   > Nenhuma concatenação específica definida.\n")
+  }
+  
+  # Final cleaned and concatenated data
+  keywords_long <- keywords_long_concatenated
+  
+  if(nrow(keywords_long) == 0) stop("Nenhuma palavra-chave válida restante após a filtragem e concatenação.") # PT
+  cat("Total de instâncias de palavras-chave válidas por artigo (final):", nrow(keywords_long), "; Palavras-chave únicas distintas (final):", n_distinct(keywords_long$keyword), "\n") # PT
+  
+  # --- Calculate overall keyword frequency AFTER all cleaning ---
+  cat("Calculando frequência total das palavras-chave FINAIS...\n") # PT
+  keyword_total_freq <- keywords_long %>%
+    count(keyword, name = "total_freq", sort = TRUE)
   
   # --- PART 1: Keyword Co-occurrence Network ---
+  # (This part now uses the fully CLEANED and CONCATENATED keywords_long)
   cat("\n--- Construindo Rede de Coocorrência de Palavras-chave ---\n") # PT
   
-  # ... (Keyword pairing and counting code remains the same) ...
-  # --- 3. Create Keyword Pairs ---
-  cat("Gerando pares de palavras-chave...\n") # PT
-  keyword_pairs_list <- keywords_long %>%
+  # --- 3. Create Keyword Pairs within each paper ---
+  cat("Gerando pares de palavras-chave por artigo (usando dados finais)...\n") # PT
+  keyword_pairs_unnested <- keywords_long %>% # Uses the final version
     group_by(paper_id) %>%
-    summarise(unique_keywords = list(unique(keyword)), .groups = 'drop') %>%
-    filter(sapply(unique_keywords, length) >= 2) %>%
-    mutate(pair_df = lapply(unique_keywords, function(kw_vector) {
-      if (length(kw_vector) < 2) return(NULL)
-      pair_matrix <- combn(kw_vector, 2)
-      tibble(keyword1 = pair_matrix[1, ], keyword2 = pair_matrix[2, ])
-    })) %>%
-    filter(!sapply(pair_df, is.null)) %>%
-    select(paper_id, pair_df)
-  
-  keyword_pairs_unnested <- keyword_pairs_list %>% unnest(pair_df)
+    do({
+      if (nrow(.) >= 2) {
+        pairs <- combn(.$keyword, 2, simplify = FALSE)
+        bind_rows(lapply(pairs, function(p) tibble(keyword1 = p[1], keyword2 = p[2])))
+      } else {
+        tibble()
+      }
+    }) %>%
+    ungroup()
   
   # --- 4. Standardize & Count Pairs ---
   cat("Contando coocorrências...\n") # PT
@@ -109,33 +203,41 @@ tryCatch({
     cat("Criando objeto de grafo...\n") # PT
     graph_obj <- graph_from_data_frame(keyword_pair_counts, directed = FALSE)
     
-    # --- 6. Filter & Enhance Graph ---
-    cat("Filtrando grafo e detectando comunidades...\n") # PT
+    # --- 6. Filter Graph by Node Degree & Detect Communities ---
+    cat("Filtrando grafo pelo grau mínimo do nó (", min_keyword_freq_network, ") e detectando comunidades...\n") # PT
     if (!is.null(graph_obj) && vcount(graph_obj) > 0) {
       node_degrees <- degree(graph_obj, mode = "all")
       nodes_to_keep <- names(node_degrees[node_degrees >= min_keyword_freq_network])
-      graph_filtered <- induced_subgraph(graph_obj, V(graph_obj)$name %in% nodes_to_keep)
       
-      if (vcount(graph_filtered) > 0 && ecount(graph_filtered) > 0) {
-        communities <- cluster_louvain(graph_filtered)
-        num_communities <- length(unique(membership(communities)))
-        cat("Detectadas", num_communities, "comunidades.\n") # PT
+      if(length(nodes_to_keep) > 0){
+        graph_filtered <- induced_subgraph(graph_obj, V(graph_obj)$name %in% nodes_to_keep)
+        graph_filtered <- delete.vertices(graph_filtered, degree(graph_filtered) == 0)
         
-        keyword_total_freq <- keywords_long %>% count(keyword, name = "total_freq")
-        node_data <- tibble(name = V(graph_filtered)$name) %>%
-          left_join(keyword_total_freq, by = c("name" = "keyword")) %>%
-          mutate(total_freq = ifelse(is.na(total_freq), 1, total_freq))
-        
-        V(graph_filtered)$size <- log1p(node_data$total_freq) * 2.5
-        V(graph_filtered)$label <- V(graph_filtered)$name
-        V(graph_filtered)$community <- membership(communities)
-        V(graph_filtered)$total_freq <- node_data$total_freq
-        
-        graph_plot_obj <- graph_filtered
-        cat("Grafo filtrado pronto:", vcount(graph_plot_obj), "nós,", ecount(graph_plot_obj), "arestas.\n") # PT
-        
+        if (vcount(graph_filtered) > 0 && ecount(graph_filtered) > 0) {
+          communities <- cluster_louvain(graph_filtered)
+          num_communities <- length(unique(membership(communities)))
+          cat("Detectadas", num_communities, "comunidades usando o algoritmo Louvain.\n") # PT
+          
+          # Prepare node data for plotting (match total frequency FROM THE FINAL DATA)
+          node_data <- tibble(name = V(graph_filtered)$name) %>%
+            left_join(keyword_total_freq, by = c("name" = "keyword")) %>% # Uses final frequencies
+            mutate(total_freq = ifelse(is.na(total_freq), 1, total_freq))
+          
+          V(graph_filtered)$size <- log1p(node_data$total_freq) * 2.5
+          V(graph_filtered)$label <- V(graph_filtered)$name
+          V(graph_filtered)$community <- membership(communities)
+          V(graph_filtered)$total_freq <- node_data$total_freq
+          
+          graph_plot_obj <- graph_filtered
+          cat("Grafo filtrado pronto:", vcount(graph_plot_obj), "nós,", ecount(graph_plot_obj), "arestas.\n") # PT
+          
+        } else {
+          cat("Aviso: Grafo vazio após filtrar por grau mínimo e remover isolados. Pulando rede e mapa temático.\n") # PT
+          graph_plot_obj <- NULL
+          communities <- NULL
+        }
       } else {
-        cat("Aviso: Grafo vazio após filtrar por grau mínimo (", min_keyword_freq_network,"). Pulando rede e mapa temático.\n") # PT
+        cat("Aviso: Nenhum nó atende ao critério de grau mínimo (", min_keyword_freq_network,"). Pulando rede e mapa temático.\n") # PT
         graph_plot_obj <- NULL
         communities <- NULL
       }
@@ -147,178 +249,180 @@ tryCatch({
   }
   
   # --- 7. Visualize Enhanced Network (Save to PDF) ---
+  # (Code remains the same, uses graph_plot_obj derived from final data)
   if (!is.null(graph_plot_obj)) {
     cat("Gerando gráfico da rede (salvando em", output_network_pdf, ")...\n") # PT
     tryCatch({
-      pdf(output_network_pdf, width = 14, height = 11) # Open PDF device
-      par(mar=c(1, 1, 3, 1)) # Set margins for plot
+      pdf(output_network_pdf, width = 14, height = 11)
+      par(mar=c(1, 1, 3, 1))
       
-      # Regenerate colors
       num_communities_plot <- length(unique(V(graph_plot_obj)$community))
-      if (num_communities_plot > 8) {
-        community_colors <- colorRampPalette(brewer.pal(8, "Set2"))(num_communities_plot)
-      } else if (num_communities_plot > 2) {
-        community_colors <- brewer.pal(num_communities_plot, "Set2")
-      } else if (num_communities_plot == 2) {
-        community_colors <- brewer.pal(3, "Set2")[1:2]
+      if (num_communities_plot > 0) {
+        if (num_communities_plot > 8) {
+          community_colors <- colorRampPalette(brewer.pal(8, "Set2"))(num_communities_plot)
+        } else if (num_communities_plot > 2) {
+          community_colors <- brewer.pal(num_communities_plot, "Set2")
+        } else if (num_communities_plot == 2) {
+          community_colors <- brewer.pal(3, "Set2")[1:2]
+        } else {
+          community_colors <- brewer.pal(3, "Set2")[1]
+        }
+        community_map <- setNames(community_colors, sort(unique(V(graph_plot_obj)$community)))
+        V(graph_plot_obj)$color <- community_map[as.character(V(graph_plot_obj)$community)]
       } else {
-        community_colors <- brewer.pal(3, "Set2")[1]
+        V(graph_plot_obj)$color <- "grey"
+        community_map <- NULL
       }
-      community_map <- setNames(community_colors, sort(unique(V(graph_plot_obj)$community)))
-      V(graph_plot_obj)$color <- community_map[as.character(V(graph_plot_obj)$community)]
       
       layout_algo <- layout_nicely(graph_plot_obj)
       
-      # Plot to PDF
       plot(graph_plot_obj,
            layout = layout_algo,
-           vertex.frame.color = "grey40",
-           vertex.label.color = "black",
-           vertex.label.cex = 0.65,
-           vertex.label.dist = 0.4,
-           edge.color = rgb(0.5, 0.5, 0.5, alpha = 0.4),
-           edge.curved = 0.1,
+           vertex.frame.color = "grey40", vertex.label.color = "black",
+           vertex.label.cex = 0.65, vertex.label.dist = 0.4,
+           edge.color = rgb(0.5, 0.5, 0.5, alpha = 0.4), edge.curved = 0.1,
            edge.width = scales::rescale(E(graph_plot_obj)$weight, to = c(0.3, 3.0)),
            main = "Rede de Coocorrência de Palavras-chave (Colorida por Comunidade)", # PT
-           sub = paste("Nós dimensionados por log(frequência), grau mínimo >=", min_keyword_freq_network) # PT
+           sub = paste("Nós dimensionados por log(frequência total), grau mínimo >=", min_keyword_freq_network) # PT
       )
-      if (num_communities_plot <= 8 && num_communities_plot > 1) {
+      if (!is.null(community_map) && num_communities_plot <= 12 && num_communities_plot > 1) {
         legend("bottomleft", legend = paste("Comunidade", names(community_map)), # PT
-               fill = community_map, bty = "n", cex = 0.8)
+               fill = community_map, bty = "n", cex = 0.8, title="Comunidades")
       }
-      dev.off() # Close PDF device
-      par(mar=c(5.1, 4.1, 4.1, 2.1)) # Reset default margins
-      cat("Gráfico da rede salvo.\n") # PT
+      dev.off()
+      par(mar=c(5.1, 4.1, 4.1, 2.1))
+      cat("Gráfico da rede salvo em:", output_network_pdf, "\n") # PT
     }, error = function(e_net){
       cat("Erro ao gerar PDF da rede:", conditionMessage(e_net), "\n") # PT
-      if(exists("dev.off")) try(dev.off(), silent=TRUE) # Try to close device if open
+      if(exists("dev.off") && dev.cur() != 1) try(dev.off(), silent=TRUE)
     })
   } else {
-    cat("Pulando geração do gráfico da rede.\n") # PT
+    cat("Pulando geração do gráfico da rede (grafo não disponível).\n") # PT
   }
   
   
-  # --- PART 1.5: Thematic Map (Save to PDF) ---
-  cat("\n--- Gerando Mapa Temático ---\n") # PT
+  # --- PART 1.5: Thematic Map (using Callon's metrics - Save to PDF) ---
+  # (Code remains the same, uses graph_plot_obj and communities derived from final data)
+  cat("\n--- Gerando Mapa Temático (Callon) ---\n") # PT
   
-  thematic_plot_obj <- NULL # Initialize thematic plot object
+  thematic_plot_obj <- NULL
   
-  if (!is.null(graph_plot_obj) && !is.null(communities) && length(communities) > 0) {
-    cat("Calculando Centralidade e Densidade para as comunidades...\n") # PT
+  if (!is.null(graph_plot_obj) && !is.null(communities) && length(unique(membership(communities))) > 0) {
+    cat("Calculando Centralidade (ligações externas) e Densidade (ligações internas) para as comunidades...\n") # PT
     
-    # ... (Calculation logic for thematic_metrics remains the same) ...
     community_ids <- unique(membership(communities))
-    num_communities_map <- length(community_ids)
     thematic_metrics <- lapply(community_ids, function(comm_id) {
-      nodes_in_comm <- V(graph_plot_obj)[community == comm_id]
-      node_names_in_comm <- names(nodes_in_comm)
-      if (length(nodes_in_comm) == 0) return(NULL)
+      metrics <- calculate_callon_metrics(graph_plot_obj, communities, comm_id)
+      nodes_in_comm_indices <- which(membership(communities) == comm_id)
+      community_node_names <- V(graph_plot_obj)$name[nodes_in_comm_indices]
+      community_node_freqs <- V(graph_plot_obj)$total_freq[nodes_in_comm_indices]
       
-      incident_edges <- E(graph_plot_obj)[inc(nodes_in_comm)]
-      
-      if (length(incident_edges) == 0) {
-        internal_links_sum <- 0
-        external_links_sum <- 0
-      } else {
-        internal_links <- incident_edges[from(nodes_in_comm) & to(nodes_in_comm)]
-        internal_links_sum <- sum(E(graph_plot_obj)$weight[internal_links], na.rm=TRUE)
-        external_links_sum <- sum(E(graph_plot_obj)$weight[incident_edges], na.rm=TRUE) - internal_links_sum
-      }
-      
-      community_node_freqs <- V(graph_plot_obj)$total_freq[V(graph_plot_obj)$community == comm_id]
-      community_node_names <- V(graph_plot_obj)$name[V(graph_plot_obj)$community == comm_id]
-      
-      if(length(community_node_names) > 0 && length(community_node_freqs) > 0){
+      if(length(community_node_names) > 0 && length(community_node_freqs) > 0 && !all(is.na(community_node_freqs))){
         most_frequent_keyword <- community_node_names[which.max(community_node_freqs)]
-        community_label <- paste0(most_frequent_keyword)
+        community_label <- str_trunc(most_frequent_keyword, 30)
       } else {
         community_label <- paste("Comunidade", comm_id) # PT fallback
       }
       
-      num_keywords_in_cluster <- length(nodes_in_comm)
-      
       return(tibble(
         community_id = comm_id,
         label = community_label,
-        Centralidade = external_links_sum, # PT
-        Densidade = internal_links_sum,    # PT
-        n_keywords = num_keywords_in_cluster
+        Centralidade = metrics$centrality,
+        Densidade = metrics$density,
+        n_keywords = metrics$n_keywords
       ))
     })
-    thematic_data <- bind_rows(thematic_metrics) %>% filter(!is.null(community_id))
     
+    thematic_data <- bind_rows(thematic_metrics) %>%
+      filter(!is.null(community_id), n_keywords > 0)
     
     if(nrow(thematic_data) > 0) {
       cat("Criando e salvando Mapa Temático (salvando em", output_thematic_map_pdf, ")...\n") # PT
       
       median_centrality <- median(thematic_data$Centralidade, na.rm = TRUE)
       median_density <- median(thematic_data$Densidade, na.rm = TRUE)
+      median_centrality <- ifelse(is.finite(median_centrality), median_centrality, 0)
+      median_density <- ifelse(is.finite(median_density), median_density, 0)
+      cat("Limites do quadrante (Medianas): Centralidade=", round(median_centrality,2), ", Densidade=", round(median_density,2), "\n")
       
-      # Create the ggplot object
+      # Alterado para usar "Temas Periféricos" como sugerido
       thematic_plot_obj <- ggplot(thematic_data, aes(x = Centralidade, y = Densidade)) +
-        geom_point(aes(size = n_keywords), alpha = 0.7, color = "steelblue") +
-        geom_text_repel(aes(label = label), size = 3.0, max.overlaps = 15) +
         geom_hline(yintercept = median_density, linetype = "dashed", color = "grey50") +
         geom_vline(xintercept = median_centrality, linetype = "dashed", color = "grey50") +
-        scale_size_continuous(range = c(3, 10), name = "Nº Palavras-chave") + # PT
+        geom_point(aes(size = n_keywords), alpha = 0.7, color = "steelblue") +
+        geom_text_repel(aes(label = label),
+                        size = 3.0, max.overlaps = 15,
+                        box.padding = 0.4, point.padding = 0.6) +
+        scale_size_continuous(range = c(4, 12), name = "Nº de Palavras-\nchave no Tema") +
+        annotate("text", x = median_centrality, y = Inf, label = "Temas Motores\n", hjust = 0.5, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
+        annotate("text", x = -Inf, y = Inf, label = "Temas de Nicho\n", hjust = -0.1, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
+        annotate("text", x = -Inf, y = -Inf, label = "Temas Periféricos\n", hjust = -0.1, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") + # <<< NOME ALTERADO AQUI
+        annotate("text", x = median_centrality, y = -Inf, label = "Temas Básicos\n", hjust = 0.5, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") +
         labs(
-          title = "Mapa Temático dos Agrupamentos de Palavras-chave", # PT
-          subtitle = "Baseado nas Comunidades da Rede de Coocorrência", # PT
-          x = "Centralidade (Soma dos Pesos das Ligações Externas)", # PT
-          y = "Densidade (Soma dos Pesos das Ligações Internas)" # PT
+          title = "Mapa Temático (Baseado em Centralidade e Densidade de Callon)", # PT
+          subtitle = paste("Comunidades da rede de coocorrência"), # PT
+          x = "Centralidade (Força das ligações com outros temas)", # PT
+          y = "Densidade (Força das ligações internas do tema)" # PT
         ) +
         theme_minimal(base_size = 12) +
-        theme(plot.title = element_text(hjust = 0.5),
-              plot.subtitle = element_text(hjust = 0.5)) +
-        annotate("text", x = Inf, y = Inf, label = "Temas Motores\n(Alta Centralidade, Alta Densidade)", hjust = 1.1, vjust = 1.1, size = 3.5, color = "grey40") + # PT
-        annotate("text", x = -Inf, y = Inf, label = "Temas de Nicho\n(Baixa Centralidade, Alta Densidade)", hjust = -0.1, vjust = 1.1, size = 3.5, color = "grey40") + # PT
-        annotate("text", x = Inf, y = -Inf, label = "Temas Básicos\n(Alta Centralidade, Baixa Densidade)", hjust = 1.1, vjust = -0.1, size = 3.5, color = "grey40") + # PT
-        annotate("text", x = -Inf, y = -Inf, label = "Temas Emergentes/Em Declínio\n(Baixa Centralidade, Baixa Densidade)", hjust = -0.1, vjust = -0.1, size = 3.5, color = "grey40") # PT
+        theme(
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5),
+          plot.margin = margin(20, 20, 20, 20)
+        )
       
-      # Save the ggplot object directly to PDF
       tryCatch({
         ggsave(output_thematic_map_pdf, plot = thematic_plot_obj, width = 10, height = 8, device = "pdf")
-        cat("Mapa temático salvo.\n") # PT
+        cat("Mapa temático salvo em:", output_thematic_map_pdf, "\n") # PT
       }, error = function(e_map){
         cat("Erro ao salvar PDF do mapa temático:", conditionMessage(e_map), "\n") # PT
       })
       
     } else {
-      cat("Aviso: Nenhum dado temático válido calculado. Pulando mapa temático.\n") # PT
+      cat("Aviso: Nenhum dado temático válido calculado após filtragem. Pulando mapa temático.\n") # PT
     }
     
   } else {
-    cat("Pulando geração do Mapa Temático porque a rede ou comunidades estão faltando.\n") # PT
+    cat("Pulando geração do Mapa Temático porque a rede filtrada ou as comunidades estão faltando.\n") # PT
   }
   
   
   # --- PART 2: Keyword Trend Analysis (Sankey Diagram - HTML and Static PDF) ---
+  # (This part now uses the fully CLEANED and CONCATENATED keywords_long and keyword_total_freq)
   cat("\n--- Gerando Diagrama Sankey de Tendência de Palavras-chave ---\n") # PT
   
-  sankey_plot_obj <- NULL # Initialize sankey plot object
+  sankey_plot_obj <- NULL
   
-  # ... (Keyword counting and top keyword identification remains the same) ...
   # --- 8. Count Keywords per Year ---
-  cat("Contando frequência de palavras-chave por ano...\n") # PT
-  keyword_yearly_counts <- keywords_long %>%
+  cat("Contando frequência de palavras-chave por ano (usando dados finais)...\n") # PT
+  keyword_yearly_counts <- keywords_long %>% # Uses final version
     count(year, keyword, name = "yearly_count") %>%
     filter(yearly_count > 0)
   
   # --- 9. Identify Top Keywords Overall ---
-  cat("Identificando as", num_top_keywords_trend, "principais palavras-chave no geral...\n") # PT
+  cat("Identificando as", num_top_keywords_trend, "principais palavras-chave no geral (usando dados finais)...\n") # PT
+  # Use the pre-calculated and final keyword_total_freq
   if(exists("keyword_total_freq") && inherits(keyword_total_freq, "data.frame") && nrow(keyword_total_freq) > 0) {
-    top_keywords_df <- keyword_total_freq %>% arrange(desc(total_freq))
-  } else {
+    top_keywords_df <- keyword_total_freq # Already sorted and final
+  } else { # Fallback just in case
     top_keywords_df <- keywords_long %>%
-      count(keyword, sort = TRUE, name = "total_count")
+      count(keyword, sort = TRUE, name = "total_freq")
   }
+  
   top_keywords <- top_keywords_df %>%
     slice_head(n = num_top_keywords_trend) %>%
     pull(keyword)
   
-  
   if(length(top_keywords) > 0){
-    cat("Principais palavras-chave selecionadas:", paste(top_keywords, collapse = ", "), "\n") # PT
+    # Check if "land use" is in top keywords (it should be more prominent now)
+    cat("Principais palavras-chave selecionadas para Sankey:", paste(top_keywords, collapse = ", "), "\n") # PT
+    if("land use" %in% top_keywords){
+      cat("   > 'land use' está entre as top", num_top_keywords_trend, "palavras-chave.\n")
+    }
+    if("land use change" %in% top_keywords){
+      cat("   > AVISO INESPERADO: 'land use change' ainda está no top keywords? Verifique a lógica de concatenação.\n")
+    }
+    
     
     # --- 10. Prepare Data for Sankey ---
     sankey_data <- keyword_yearly_counts %>%
@@ -327,25 +431,26 @@ tryCatch({
     if(nrow(sankey_data) == 0) {
       cat("Aviso: Nenhuma contagem encontrada para as principais palavras-chave em nenhum ano. Pulando diagrama Sankey.\n") # PT
     } else {
+      # (Sankey data prep and plotting code remains the same)
       cat("Preparando dados para o diagrama Sankey...\n") # PT
       year_nodes_chr <- as.character(sort(unique(sankey_data$year)))
-      keyword_nodes <- unique(sankey_data$keyword)
-      all_nodes <- c(year_nodes_chr, keyword_nodes)
-      nodes_df <- data.frame(name = unique(all_nodes), stringsAsFactors = FALSE) %>%
+      keyword_nodes_sankey <- unique(sankey_data$keyword)
+      all_node_names <- c(year_nodes_chr, setdiff(keyword_nodes_sankey, year_nodes_chr))
+      
+      nodes_df <- data.frame(name = all_node_names, stringsAsFactors = FALSE) %>%
         mutate(id = row_number() - 1)
       
       links_df <- sankey_data %>%
         mutate(source_name = as.character(year), target_name = keyword) %>%
-        left_join(nodes_df %>% rename(source_id = id), by = c("source_name" = "name")) %>%
-        left_join(nodes_df %>% rename(target_id = id), by = c("target_name" = "name")) %>%
-        mutate(
+        left_join(nodes_df %>% select(name, source_id = id), by = c("source_name" = "name")) %>%
+        left_join(nodes_df %>% select(name, target_id = id), by = c("target_name" = "name")) %>%
+        transmute(
           source = source_id,
           target = target_id,
           value = yearly_count,
           group = target_name
         ) %>%
-        select(source, target, value, group) %>%
-        filter(!is.na(source), !is.na(target))
+        filter(!is.na(source), !is.na(target), value > 0)
       
       if(nrow(links_df) == 0) {
         cat("Aviso: Falha ao criar links válidos para o diagrama Sankey. Pulando.\n") # PT
@@ -356,67 +461,62 @@ tryCatch({
         sankey_plot_obj <- sankeyNetwork(
           Links = links_df, Nodes = nodes_df, Source = "source",
           Target = "target", Value = "value", NodeID = "name",
-          NodeGroup = NULL, LinkGroup = "group", units = "menções", # PT
-          fontSize = 11, nodeWidth = 30, nodePadding = 15, sinksRight = FALSE,
-          margin = list(top=25, bottom=10, left=50, right=50)
+          NodeGroup = NULL, LinkGroup = "group", units = "Menções", # PT
+          fontSize = 11, nodeWidth = 30, nodePadding = 15, sinksRight = TRUE,
+          margin = list(top=35, bottom=10, left=50, right=50)
         )
         
-        # Add title using prependContent for HTML version
+        title_sankey <- paste0("Fluxo das ", num_top_keywords_trend, " Principais Palavras-chave por Ano") # PT title
         sankey_plot_obj_html <- htmlwidgets::prependContent(sankey_plot_obj,
-                                                            htmltools::tags$h3(paste0("Menções de Palavras-chave por Ano (Top ", num_top_keywords_trend, " Palavras-chave)"), # PT title for HTML
+                                                            htmltools::tags$h3(title_sankey,
                                                                                style = "text-align:center; margin-bottom: 0px;"))
-        
         
         # --- Save Interactive HTML Sankey ---
         cat("Salvando diagrama Sankey interativo em:", output_sankey_html, "\n") # PT
         tryCatch({
-          saveWidget(sankey_plot_obj_html, file = output_sankey_html, selfcontained = TRUE)
+          saveWidget(sankey_plot_obj_html, file = file.path(getwd(), output_sankey_html), selfcontained = TRUE)
           cat("Diagrama Sankey interativo salvo.\n") # PT
         }, error = function(e_html){
           cat("Erro ao salvar o HTML do Sankey:", conditionMessage(e_html), "\n") #PT
         })
         
-        
         # --- Save Static PDF Sankey via Screenshot ---
-        cat("Salvando imagem estática do Sankey em PDF:", output_sankey_pdf, "(via webshot/magick)...\n") # PT
+        cat("Salvando imagem estática do Sankey em PDF:", output_sankey_pdf, "(via webshot2/magick)...\n") # PT
         cat("Isso pode levar alguns segundos e requer Chrome/Chromium...\n") # PT
         temp_html_sankey <- tempfile(fileext = ".html")
         temp_png_sankey <- tempfile(fileext = ".png")
         snapshot_success <- FALSE
         
         tryCatch({
-          # 1. Save widget *without title* to temporary HTML for cleaner screenshot
           saveWidget(sankey_plot_obj, temp_html_sankey, selfcontained = TRUE)
-          
-          # 2. Take screenshot
           webshot2::webshot(url = temp_html_sankey, file = temp_png_sankey,
-                            delay = 1.5, vwidth = 1000, vheight = 700) # Adjust viewport if needed
+                            delay = 2, vwidth = 1000, vheight = 700)
           
-          # 3. Read PNG and convert to PDF using magick
-          img <- magick::image_read(temp_png_sankey)
-          # Add a title using magick annotate (optional, can adjust placement/font)
-          img_with_title <- magick::image_annotate(img,
-                                                   text = paste0("Menções de Palavras-chave por Ano (Top ", num_top_keywords_trend, " Palavras-chave)"), # PT Title for PDF
-                                                   gravity = "north", # Place title at the top center
-                                                   location = "+0+10", # Offset slightly from top edge
-                                                   size = 18, # Adjust font size
-                                                   color = "black",
-                                                   weight = 700) # Boldness
-          
-          magick::image_write(img_with_title, path = output_sankey_pdf, format = "pdf")
-          snapshot_success <- TRUE
+          if (file.exists(temp_png_sankey) && file.info(temp_png_sankey)$size > 0) {
+            img <- magick::image_read(temp_png_sankey)
+            img_with_title <- magick::image_annotate(img,
+                                                     text = title_sankey,
+                                                     gravity = "north",
+                                                     location = "+0+10",
+                                                     size = 18,
+                                                     color = "black",
+                                                     weight = 700)
+            magick::image_write(img_with_title, path = output_sankey_pdf, format = "pdf")
+            snapshot_success <- TRUE
+          } else {
+            cat("Aviso: Falha ao criar o arquivo PNG temporário para o Sankey PDF.\n")
+          }
           
         }, error = function(e_sankey_pdf){
           cat("ERRO ao tentar salvar Sankey em PDF via webshot/magick:", conditionMessage(e_sankey_pdf), "\n") # PT
           cat("Verifique se 'webshot2', 'magick' estão instalados e se Chrome/Chromium está acessível.\n") # PT
-          cat("O gráfico Sankey interativo foi salvo separadamente em:", output_sankey_html, "\n") # PT
+          cat("O gráfico Sankey interativo pode ter sido salvo em:", output_sankey_html, "\n") # PT
           
         }, finally = {
-          # Clean up temporary files
-          if (file.exists(temp_html_sankey)) unlink(temp_html_sankey)
-          if (file.exists(temp_png_sankey)) unlink(temp_png_sankey)
+          if (file.exists(temp_html_sankey)) try(unlink(temp_html_sankey), silent=TRUE)
+          if (file.exists(temp_png_sankey)) try(unlink(temp_png_sankey), silent=TRUE)
         })
-        if(snapshot_success) cat("PDF estático do Sankey salvo.\n") # PT
+        if(snapshot_success) cat("PDF estático do Sankey salvo em:", output_sankey_pdf, "\n") # PT
         
       }
     }
@@ -424,16 +524,13 @@ tryCatch({
     cat("Aviso: Nenhuma palavra-chave principal identificada. Pulando diagrama Sankey.\n") # PT
   }
   
-  
-  # Error handling for the whole script
+  # End of main tryCatch block
 }, error = function(e) {
   cat("\n----------------------\n")
-  cat("Ocorreu um erro geral no script:\n") # PT
+  cat("Ocorreu um erro GERAL no script:\n") # PT
   cat(conditionMessage(e), "\n")
-  cat("Rastreamento da pilha (Stack trace):\n") # PT
-  print(sys.calls())
   cat("----------------------\n")
 })
 
-cat("\nScript finalizado.\n") # PT
+cat("\n--- Script finalizado. Verifique os arquivos PDF e HTML gerados. ---\n") # PT
 
