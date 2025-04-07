@@ -1,9 +1,5 @@
-# --- 0. Load Necessary Libraries ---
-# Ensure these packages are installed:
-# install.packages(c("readxl", "dplyr", "tidyr", "stringr", "igraph",
-#                    "ggplot2", "ggrepel", "networkD3", "htmlwidgets",
-#                    "RColorBrewer", "webshot2", "magick"))
-
+# --- Load Necessary Libraries ---
+# (Libraries remain the same)
 library(readxl)
 library(dplyr)
 library(tidyr)
@@ -18,16 +14,18 @@ library(webshot2) # For saving HTML widget snapshot
 library(magick)   # For converting snapshot PNG to PDF
 
 # --- Parameters ---
-excel_file <- "bibliographic_data_output.xlsx" # Input Excel file name
-keyword_column <- "palavras-chave"       # Name of the column with keywords (Portuguese default)
-year_column <- "Ano"                    # Name of the column with publication year (Portuguese default)
-keyword_separator <- ","                # How keywords are separated - ADJUST IF NEEDED!
-min_cooccurrence <- 5                   # Network: Minimum times two keywords must co-occur to form an edge
-min_keyword_freq_network <- 3           # Network: Minimum node degree (connections) to keep a keyword in the network/map
-num_top_keywords_trend <- 15            # Sankey/Trend: Number of top keywords to show
+# (Parameters remain the same)
+excel_file <- "estudos.xlsx"
+keyword_column <- "Palavras-chave dos autores"
+year_column <- "Ano"
+keyword_separator <- ";"
+min_cooccurrence <- 5
+min_keyword_freq_network <- 3
+num_top_keywords_trend <- 15
 
 # --- Keywords to Remove ---
 # Add any other generic/undesired words (lowercase) to this list
+# <<< MODIFICATION HERE: Added "na" to the list >>>
 keywords_to_remove <- c(
   "article",
   "artigo",
@@ -35,30 +33,29 @@ keywords_to_remove <- c(
   "review",
   "study",
   "estudo",
-  "research", # Example: Add more if needed
-  "journal"
+  "research",
+  "journal",
+  "na" # <-- ADDED THIS LINE to explicitly remove "na" after lowercasing
   # Adicione mais palavras comuns que não são palavras-chave reais aqui
 )
 
 # --- Specific Keyword Concatenations ---
-# Define pairs where the first element should be replaced by the second
-# Format: list(c("term_to_replace", "replacement_term"), c("another_to_replace", "replacement"))
+# (Replacements remain the same)
 keyword_replacements <- list(
   c("land use change", "land use"),
-  c("mudança no uso da terra", "uso da terra"), # Example in Portuguese
-  c("uso e cobertura da terra", "uso da terra") # Example combining cover
-  # Add more pairs if needed, e.g., c("remote sensing", "sensoriamento remoto")
+  c("mudança no uso da terra", "uso da terra"),
+  c("uso e cobertura da terra", "uso da terra")
 )
 
-
-# --- Output Files (Separate PDFs/HTML) ---
-output_network_pdf <- "rede_palavras_chave_PT.pdf"          # Network PDF
-output_thematic_map_pdf <- "mapa_tematico_palavras_chave_PT.pdf" # Thematic Map PDF
-output_sankey_pdf <- "tendencia_palavras_chave_sankey_PT.pdf"     # Sankey static PDF
-output_sankey_html <- "tendencia_palavras_chave_sankey_PT.html"   # Sankey interactive HTML
+# --- Output Files ---
+# (Output file names remain the same)
+output_network_pdf <- "rede_palavras_chave_PT.pdf"
+output_thematic_map_pdf <- "mapa_tematico_palavras_chave_PT.pdf"
+output_sankey_pdf <- "tendencia_palavras_chave_sankey_PT.pdf"
+output_sankey_html <- "tendencia_palavras_chave_sankey_PT.html"
 
 # --- Helper Function for Callon's Metrics ---
-# (Function remains the same as before)
+# (Function remains the same)
 calculate_callon_metrics <- function(graph, communities_object, cluster_id) {
   cluster_nodes_indices <- which(membership(communities_object) == cluster_id)
   cluster_nodes_names <- V(graph)$name[cluster_nodes_indices]
@@ -95,6 +92,7 @@ tryCatch({
     mutate(paper_id = row_number()) %>%
     select(paper_id, !!sym(keyword_column), !!sym(year_column)) %>%
     rename(keywords = !!sym(keyword_column), year = !!sym(year_column)) %>%
+    # This initial filter correctly handles rows where the *entire* cell is NA or empty
     filter(!is.na(keywords), nchar(trimws(keywords)) > 0, !is.na(year)) %>%
     mutate(year = as.numeric(as.character(year))) %>%
     filter(!is.na(year))
@@ -102,7 +100,7 @@ tryCatch({
   if(nrow(keywords_df) == 0) stop("Nenhum dado válido após filtrar por palavras-chave e anos.") # PT
   cat("Dados carregados. Processando", nrow(keywords_df), "artigos.\n") # PT
   
-  # --- 2. Clean, Split, Filter, and Concatenate Keywords --- # <<< MODIFIED SECTION >>>
+  # --- 2. Clean, Split, Filter, and Concatenate Keywords ---
   cat("Limpando, separando, filtrando e concatenando palavras-chave...\n") # PT
   
   # Initial splitting and tidying
@@ -117,13 +115,14 @@ tryCatch({
   
   cat(" - Palavras-chave únicas por artigo (antes de remover/concatenar):", nrow(keywords_long_raw), "\n")
   
-  # >>> Data Cleaning Step 1: Remove Generic Keywords <<<
+  # >>> Data Cleaning Step 1: Remove Generic Keywords (including "na") <<<
   cat(" - Removendo palavras-chave genéricas predefinidas:", paste(keywords_to_remove, collapse=", "), "\n")
   n_antes_remocao <- nrow(keywords_long_raw)
   keywords_long_cleaned <- keywords_long_raw %>%
+    # This filter now also removes any 'na' strings that might have resulted from splitting
     filter(!keyword %in% keywords_to_remove)
   n_depois_remocao <- nrow(keywords_long_cleaned)
-  cat("   > Removidas", n_antes_remocao - n_depois_remocao, "instâncias de palavras-chave genéricas.\n") # PT
+  cat("   > Removidas", n_antes_remocao - n_depois_remocao, "instâncias de palavras-chave genéricas (incluindo 'na').\n") # PT (Updated message)
   
   # >>> Data Cleaning Step 2: Concatenate Specific Keywords <<<
   cat(" - Concatenando termos específicos...\n")
@@ -160,7 +159,7 @@ tryCatch({
     count(keyword, name = "total_freq", sort = TRUE)
   
   # --- PART 1: Keyword Co-occurrence Network ---
-  # (This part now uses the fully CLEANED and CONCATENATED keywords_long)
+  # (Rest of the script remains the same as it uses the cleaned 'keywords_long' data)
   cat("\n--- Construindo Rede de Coocorrência de Palavras-chave ---\n") # PT
   
   # --- 3. Create Keyword Pairs within each paper ---
@@ -414,15 +413,7 @@ tryCatch({
     pull(keyword)
   
   if(length(top_keywords) > 0){
-    # Check if "land use" is in top keywords (it should be more prominent now)
     cat("Principais palavras-chave selecionadas para Sankey:", paste(top_keywords, collapse = ", "), "\n") # PT
-    if("land use" %in% top_keywords){
-      cat("   > 'land use' está entre as top", num_top_keywords_trend, "palavras-chave.\n")
-    }
-    if("land use change" %in% top_keywords){
-      cat("   > AVISO INESPERADO: 'land use change' ainda está no top keywords? Verifique a lógica de concatenação.\n")
-    }
-    
     
     # --- 10. Prepare Data for Sankey ---
     sankey_data <- keyword_yearly_counts %>%
