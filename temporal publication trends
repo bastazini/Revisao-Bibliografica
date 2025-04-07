@@ -8,7 +8,7 @@ library(dplyr)
 library(bbmle)
 
 # --- 1. Parâmetros ---
-excel_file <- "bibliographic_data_output.xlsx" # Verifique se o arquivo está no diretório ou forneça o caminho completo
+excel_file <- "estudos.xlsx" # Verifique se o arquivo está no diretório ou forneça o caminho completo
 output_plot_file <- "grafico_tendencia_publicacoes.png" # Opcional: Nome do arquivo para salvar o gráfico
 
 # --- 2. Carregar e Preparar Dados ---
