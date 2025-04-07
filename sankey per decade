@@ -13,20 +13,23 @@ library(webshot2) # For saving HTML widget snapshot
 library(magick)   # For converting snapshot PNG to PDF
 
 # --- Parameters ---
-excel_file <- "bibliographic_data_output.xlsx" # Input Excel file name
-keyword_column <- "palavras-chave"       # Name of the column with keywords
+excel_file <- "estudos.xlsx" # Input Excel file name
+keyword_column <- "Palavras-chave dos autores"       # Name of the column with keywords
 year_column <- "Ano"                    # Name of the column with publication year
-keyword_separator <- ","                # How keywords are separated
+keyword_separator <- ";"                # How keywords are separated <- Potential change from script 1
 
-num_top_keywords_per_decade <- 10       # Sankey: Number of top keywords PER DECADE to track
+num_top_keywords_per_decade <- 10      # Sankey: Number of top keywords PER DECADE to track
 
 # --- Keywords to Remove ---
 # Add any other generic/undesired words (lowercase) to this list
+# <<< MODIFICATION START: Added "na" >>>
 keywords_to_remove <- c(
   "article", "artigo", "paper", "review", "study", "estudo",
-  "research", "journal"
+  "research", "journal",
+  "na" # <-- ADDED THIS LINE to explicitly remove "na" after lowercasing
   # Adicione mais palavras comuns que não são palavras-chave reais aqui
 )
+# <<< MODIFICATION END >>>
 
 # --- Specific Keyword Concatenations ---
 # Define pairs where the first element should be replaced by the second
@@ -54,6 +57,7 @@ tryCatch({
     mutate(paper_id = row_number()) %>%
     select(paper_id, !!sym(keyword_column), !!sym(year_column)) %>%
     rename(keywords = !!sym(keyword_column), year = !!sym(year_column)) %>%
+    # This initial filter correctly handles rows where the *entire* cell is NA or empty
     filter(!is.na(keywords), nchar(trimws(keywords)) > 0, !is.na(year)) %>%
     mutate(year = as.numeric(as.character(year))) %>%
     filter(!is.na(year))
@@ -64,38 +68,56 @@ tryCatch({
   # --- 2. Clean, Split, Filter, and Concatenate Keywords ---
   cat("Limpando, separando, filtrando e concatenando palavras-chave...\n")
   
+  # Initial splitting and tidying
   keywords_long_raw <- keywords_df %>%
     mutate(keyword_list = str_split(keywords, fixed(keyword_separator))) %>%
     unnest(keyword_list) %>%
-    mutate(keyword = str_trim(keyword_list)) %>%
-    filter(nchar(keyword) > 0) %>%
-    mutate(keyword = tolower(keyword)) %>%
+    mutate(keyword = str_trim(keyword_list)) %>% # Trim whitespace first
+    filter(nchar(keyword) > 0) %>%              # Remove empty strings resulting from split/trim
+    mutate(keyword = tolower(keyword)) %>%       # Convert to lowercase AFTER trimming
     select(paper_id, year, keyword) %>%
-    distinct(paper_id, year, keyword)
+    distinct(paper_id, year, keyword) # Ensure unique keyword per paper
   
-  cat(" - Removendo palavras-chave genéricas...\n")
+  # >>> Data Cleaning Step 1: Remove Generic Keywords (including "na") <<<
+  cat(" - Removendo palavras-chave genéricas predefinidas (incluindo 'na'):", paste(keywords_to_remove, collapse=", "), "\n") # Updated message
+  n_antes_remocao <- nrow(keywords_long_raw)
   keywords_long_cleaned <- keywords_long_raw %>%
+    # This filter now also removes any 'na' strings that might have resulted from splitting
     filter(!keyword %in% keywords_to_remove)
+  n_depois_remocao <- nrow(keywords_long_cleaned)
+  cat("   > Removidas", n_antes_remocao - n_depois_remocao, "instâncias de palavras-chave genéricas (incluindo 'na').\n") # Added reporting
   
+  
+  # >>> Data Cleaning Step 2: Concatenate Specific Keywords <<<
   cat(" - Concatenando termos específicos...\n")
   keywords_long_concatenated <- keywords_long_cleaned
   if (length(keyword_replacements) > 0) {
+    n_before_concat <- nrow(keywords_long_concatenated)
+    cat("   > Antes da concatenação:", n_before_concat, "instâncias.\n") # Added reporting
     for (replacement_pair in keyword_replacements) {
       term_to_replace <- replacement_pair[1]
       replacement_term <- replacement_pair[2]
       keywords_long_concatenated <- keywords_long_concatenated %>%
         mutate(keyword = ifelse(keyword == term_to_replace, replacement_term, keyword))
     }
+    # Re-apply distinct after potential merges caused by concatenation
     keywords_long_concatenated <- keywords_long_concatenated %>%
-      distinct(paper_id, year, keyword) # Re-apply distinct after potential merges
+      distinct(paper_id, year, keyword)
+    n_after_concat <- nrow(keywords_long_concatenated)
+    cat("   > Depois da concatenação e distinct:", n_after_concat, "instâncias únicas por artigo/ano.\n") # Added reporting
+  } else {
+    cat("   > Nenhuma concatenação específica definida.\n")
   }
   
+  
+  # Final cleaned and concatenated data
   keywords_long_final <- keywords_long_concatenated
   
   if(nrow(keywords_long_final) == 0) stop("Nenhuma palavra-chave válida restante após a limpeza.")
-  cat("Processamento de palavras-chave concluído. Instâncias válidas:", nrow(keywords_long_final), "\n")
+  cat("Processamento de palavras-chave concluído. Instâncias válidas finais por artigo/ano:", nrow(keywords_long_final), "; Palavras-chave únicas distintas:", n_distinct(keywords_long_final$keyword),"\n") # Added reporting
   
   # --- 3. Aggregate by Decade and Calculate Frequencies ---
+  # (This part now uses the fully cleaned 'keywords_long_final')
   cat("\n--- Agregando por Década e Calculando Frequências ---\n")
   keywords_decades <- keywords_long_final %>%
     filter(!is.na(year)) %>%
@@ -103,6 +125,7 @@ tryCatch({
     select(paper_id, decade, keyword) %>%
     distinct() # Count each keyword only once per paper within a decade
   
+  # Count occurrences of each keyword within each decade
   keyword_decade_counts <- keywords_decades %>%
     count(decade, keyword, name = "count") %>%
     arrange(decade, desc(count))
@@ -119,12 +142,19 @@ tryCatch({
   
   # Get the unique set of keywords that were ever in the top N for any decade
   keywords_to_track <- unique(top_keywords_per_decade$keyword)
+  
+  if(length(keywords_to_track) == 0) {
+    stop("Nenhuma palavra-chave principal identificada nas décadas para rastrear.")
+  }
   cat("Total de palavras-chave únicas a serem rastreadas (top", num_top_keywords_per_decade, "em alguma década):", length(keywords_to_track), "\n")
   # print(keywords_to_track) # Optional: print the keywords being tracked
   
   # Filter the counts to only include these keywords
   sankey_base_data <- keyword_decade_counts %>%
     filter(keyword %in% keywords_to_track)
+  
+  if(nrow(sankey_base_data) == 0) stop("Nenhuma contagem encontrada para as palavras-chave selecionadas para rastreamento.")
+  
   
   # --- 5. Prepare Nodes and Links for Sankey ---
   cat("Preparando nós e links para o diagrama Sankey...\n")
@@ -140,35 +170,39 @@ tryCatch({
   decade_list <- sort(unique(sankey_base_data$decade))
   links_list <- list()
   
-  for (i in 1:(length(decade_list) - 1)) {
-    current_decade <- decade_list[i]
-    next_decade <- decade_list[i+1]
-    
-    # Find keywords present in both the current and next decade within our tracked set
-    current_decade_data <- sankey_base_data %>% filter(decade == current_decade)
-    next_decade_data <- sankey_base_data %>% filter(decade == next_decade)
-    
-    common_keywords <- intersect(current_decade_data$keyword, next_decade_data$keyword)
-    
-    if (length(common_keywords) > 0) {
-      # Create links for these common keywords
-      temp_links <- tibble(keyword = common_keywords) %>%
-        # Get source node info (current decade)
-        mutate(source_name = paste0(current_decade, "s - ", keyword)) %>%
-        left_join(nodes_df %>% select(name, source_id = id), by = c("source_name" = "name")) %>%
-        # Get target node info (next decade)
-        mutate(target_name = paste0(next_decade, "s - ", keyword)) %>%
-        left_join(nodes_df %>% select(name, target_id = id), by = c("target_name" = "name")) %>%
-        # Get the value (count) from the *target* node's data
-        left_join(next_decade_data %>% select(keyword, value = count), by = "keyword") %>%
-        # Filter out any missing joins (shouldn't happen with intersect, but safety first)
-        filter(!is.na(source_id), !is.na(target_id), !is.na(value), value > 0) %>%
-        # Select final columns for sankeyNetwork
-        select(source = source_id, target = target_id, value = value, group = keyword) # Use keyword for LinkGroup color
+  if (length(decade_list) > 1) { # Need at least two decades to make links
+    for (i in 1:(length(decade_list) - 1)) {
+      current_decade <- decade_list[i]
+      next_decade <- decade_list[i+1]
       
-      links_list[[as.character(current_decade)]] <- temp_links
-    }
-  }
+      # Find keywords present in both the current and next decade within our tracked set
+      current_decade_data <- sankey_base_data %>% filter(decade == current_decade)
+      next_decade_data <- sankey_base_data %>% filter(decade == next_decade)
+      
+      common_keywords <- intersect(current_decade_data$keyword, next_decade_data$keyword)
+      
+      if (length(common_keywords) > 0) {
+        # Create links for these common keywords
+        temp_links <- tibble(keyword = common_keywords) %>%
+          # Get source node info (current decade)
+          mutate(source_name = paste0(current_decade, "s - ", keyword)) %>%
+          left_join(nodes_df %>% select(name, source_id = id), by = c("source_name" = "name")) %>%
+          # Get target node info (next decade)
+          mutate(target_name = paste0(next_decade, "s - ", keyword)) %>%
+          left_join(nodes_df %>% select(name, target_id = id), by = c("target_name" = "name")) %>%
+          # Get the value (count) from the *target* node's data (represents flow into the next decade)
+          left_join(next_decade_data %>% select(keyword, value = count), by = "keyword") %>%
+          # Filter out any missing joins or zero counts
+          filter(!is.na(source_id), !is.na(target_id), !is.na(value), value > 0) %>%
+          # Select final columns for sankeyNetwork
+          select(source = source_id, target = target_id, value = value, group = keyword) # Use keyword for LinkGroup color
+        
+        if(nrow(temp_links) > 0){
+          links_list[[as.character(current_decade)]] <- temp_links
+        }
+      }
+    } # End for loop
+  } # End if length(decade_list) > 1
   
   if (length(links_list) > 0) {
     links_df <- bind_rows(links_list)
@@ -177,7 +211,7 @@ tryCatch({
   }
   
   if (nrow(nodes_df) == 0 || nrow(links_df) == 0) {
-    cat("AVISO: Não foi possível criar nós ou links válidos para o Sankey de décadas. Pulando a geração do gráfico.\n")
+    cat("AVISO: Não foi possível criar nós ou links válidos para o Sankey de décadas (0 links criados). Pulando a geração do gráfico.\n")
     sankey_plot_obj_decades <- NULL
   } else {
     cat("Nós:", nrow(nodes_df), "; Links:", nrow(links_df), "criados.\n")
@@ -187,14 +221,20 @@ tryCatch({
     
     # Define a color scale for keywords (groups) if many keywords
     num_groups <- length(unique(links_df$group))
-    if (num_groups <= 12) {
-      color_scale_js <- 'd3.scaleOrdinal(d3.schemeCategory10);' # Standard D3 scale
-    } else {
-      # Use a more diverse scale if needed, maybe interpolate
-      # This requires more complex JS or pre-defining colors in R
-      # For simplicity, stick to Category10 or similar for now.
+    if (num_groups <= 12 && num_groups > 0) {
+      # Use a palette suitable for categorical data
+      # Ensure brewer.pal gets at least 3 for n argument
+      color_palette <- RColorBrewer::brewer.pal(max(3, num_groups), "Paired")
+      # Only take the number of colors we actually need
+      color_palette_subset <- color_palette[1:num_groups]
+      color_scale_js <- paste0('d3.scaleOrdinal(["', paste(color_palette_subset, collapse = '","'), '"]);')
+    } else if (num_groups > 12) {
+      # Fallback to a standard D3 scale if too many groups
       color_scale_js <- 'd3.scaleOrdinal(d3.schemeCategory10);'
-      cat("AVISO: Mais de 12 grupos de palavras-chave, as cores podem se repetir no gráfico.\n")
+      cat("AVISO: Mais de 12 grupos de palavras-chave, as cores podem se repetir no gráfico (usando d3.schemeCategory10).\n")
+    } else { # Handle case with 0 groups
+      color_scale_js <- 'd3.scaleOrdinal(["#cccccc"]);' # Default grey
+      cat("AVISO: 0 grupos de links encontrados para colorir.\n")
     }
     
     
