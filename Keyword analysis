@@ -19,9 +19,9 @@ excel_file <- "estudos.xlsx"
 keyword_column <- "Palavras-chave dos autores"
 year_column <- "Ano"
 keyword_separator <- ";"
-min_cooccurrence <- 5
-min_keyword_freq_network <- 3
-num_top_keywords_trend <- 15
+min_cooccurrence <- 2
+min_keyword_freq_network <- 2
+num_top_keywords_trend <- 10
 
 # --- Keywords to Remove ---
 # Add any other generic/undesired words (lowercase) to this list
