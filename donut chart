@@ -1,0 +1,175 @@
+# load library
+library(ggplot2)
+library(patchwork) # Necessário para o gráfico combinado
+
+###### Tipo de avaliação 
+# Create test data.
+data <- data.frame(
+  category=c("Estima a magnitude de impactos já ocorridos	", "Projeta a magnitude de impactos futuros	", "Aborda mitigação ou adaptação para impactos	", "Cogita que impactos podem ocorrer", "Avalia emissões de gases estufa"),
+  count = c(14, 15, 10, 6, 4)
+)
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n value: ", data$count)
+
+# Make the plot
+donut_avaliacao_clima=ggplot(data, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = category)) +
+  geom_rect() +
+  scale_fill_brewer(palette = 4) +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "right", legend.title = element_blank(), legend.text = element_text(size = 12)) + 
+  geom_text(aes(x = 4, y = labelPosition, label = paste0(round(fraction*100, 1), "%")), size = 6, color = "black")
+
+
+# 4. Salvar o gráfico 2 como PNG
+ggsave(
+  filename = "donut_avaliacao_clima.png",
+  plot = donut_avaliacao_clima,
+  width = 8, height = 6, units = "in", dpi = 300, bg = "white"
+)
+print("Gráfico 'donut_avaliacao_clima.png' salvo com sucesso!")
+
+
+
+###### Distribuição por Grupo de Impacto 
+# Create test data.
+data <- data.frame(
+  category=c("Impactos na Biodiversidade", "Emissões de gases estufa", "Impactos no Ambiente", "Impactos Econômicos", "Impactos na Saúde Humana", "Impactos Sociais", "Impactos d emaneira geral"),
+  count = c(18, 10, 8, 9, 4, 2,1)
+)
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n value: ", data$count)
+
+# Make the plot
+grafico_donut_impacto_grupo=ggplot(data, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = category)) +
+  geom_rect() +
+  scale_fill_brewer(palette = 4) +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "right", legend.title = element_blank(), legend.text = element_text(size = 12)) + 
+  geom_text(aes(x = 4, y = labelPosition, label = paste0(round(fraction*100, 1), "%")), size = 6, color = "black")
+
+
+# 4. Salvar o gráfico 2 como PNG
+ggsave(
+  filename = "donut_impacto_grupo.png",
+  plot = grafico_donut_impacto_grupo,
+  width = 8, height = 6, units = "in", dpi = 300, bg = "white"
+)
+print("Gráfico 'donut_impacto_grupo.png' salvo com sucesso!")
+
+
+
+
+#########Mitigação
+# Create test data.
+data <- data.frame(
+  category=c("Não", "Avalia", "Sugere"), levels = c("Não", "Avalia", "Sugere"),
+  count = c(37, 7, 2))
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n value: ", data$count)
+
+# Make the plot
+grafico_mitig=ggplot(data, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = category)) +
+  geom_rect() +
+  scale_fill_brewer(palette = 4) +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "right", legend.title = element_blank(), legend.text = element_text(size = 12)) + 
+  geom_text(aes(x = 4, y = labelPosition, label = paste0(round(fraction*100, 1), "%")), size = 6, color = "black")+
+ggtitle("Mitigação")
+
+
+###adpt
+# Create test data.
+data <- data.frame(
+  category=c("Não", "Avalia", "Sugere"), levels = c("Não", "Avalia", "Sugere"),
+count = c(31, 12, 3))
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n value: ", data$count)
+
+# Make the plot
+grafico_adapt=ggplot(data, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = category)) +
+  geom_rect() +
+  scale_fill_brewer(palette = 4) +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "right", legend.title = element_blank(), legend.text = element_text(size = 12)) + 
+  geom_text(aes(x = 4, y = labelPosition, label = paste0(round(fraction*100, 1), "%")), size = 6, color = "black")+
+  ggtitle("Adaptação")
+
+
+
+# 5. Combinar os dois gráficos lado a lado usando patchwork
+grafico_combinado <- grafico_adapt + grafico_mitig +
+  plot_annotation(title = '',
+                  theme = theme(plot.title = element_text(hjust = 0.5, size=16, face="bold")))
+
+# 6. Salvar o gráfico COMBINADO como PNG
+ggsave(
+  filename = "donuts_adapt_mitig.png",
+  plot = grafico_combinado,
+  width = 10, height = 5, units = "in", dpi = 300, bg = "white"
+)
+
+# 7. Mensagem de confirmação
+print("Gráfico combinado 'donuts_adapt_mitig.png' salvo com sucesso!")
+
+
+
