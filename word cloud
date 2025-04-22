@@ -1,0 +1,55 @@
+library(readxl)
+library(tidyverse)
+library(wordcloud)
+library(tm)
+library(RColorBrewer)
+
+# Load Excel
+excel_file <- "estudos_workshop_445_metadados.xlsx"
+data <- read_excel(excel_file)
+
+# Split keywords
+keywords <- data[[ "Palavras-chave dos autores" ]] %>%
+  str_split(pattern = ";") %>%  # Split by semicolon
+  unlist() %>%
+  str_trim() %>%
+  tolower() %>%
+  discard(~ .x == "")
+
+# Split and clean keywords, removing NA entries first
+keywords <- data[[ "Palavras-chave dos autores" ]] %>%
+  discard(is.na) %>%               # REMOVE NA VALUES
+  str_split(pattern = ";") %>%     
+  unlist() %>%
+  str_trim() %>%
+  tolower() %>%
+  discard(~ .x == "na")              # REMOVE empty strings
+
+
+# Create frequency table
+keyword_freq <- table(keywords)
+
+# Word Cloud
+set.seed(123)  # for reproducibility
+wordcloud(
+  words = names(keyword_freq),
+  freq = keyword_freq,
+  min.freq = 2,
+  scale = c(4, 0.5),
+  colors = brewer.pal(8, "Dark2"),
+  random.order = FALSE
+)
+
+#Save plot
+png("wordcloud.png", width = 1200, height = 1000)  # Larger canvas
+wordcloud(
+  words = names(keyword_freq),
+  freq = keyword_freq,
+  min.freq = 2,
+  scale = c(3, 0.7),
+  colors = brewer.pal(8, "Dark2"),
+  random.order = FALSE,
+  rot.per = 0.1,
+  max.words = 100
+)
+dev.off()
