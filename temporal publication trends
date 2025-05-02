@@ -8,7 +8,7 @@ library(dplyr)
 library(bbmle)
 
 # --- 1. Parâmetros ---
-excel_file <- "estudos_workshop_445_metadados.xlsx" # Verifique se o arquivo está no diretório ou forneça o caminho completo
+excel_file <- "estudos_final.xlsx" # Verifique se o arquivo está no diretório ou forneça o caminho completo
 output_plot_file <- "grafico_tendencia_publicacoes.png" # Opcional: Nome do arquivo para salvar o gráfico
 
 # --- 2. Carregar e Preparar Dados ---
@@ -28,7 +28,7 @@ tryCatch({
     filter(!is.na(Ano)) %>% # Filtrar novamente caso a conversão gere NAs
     count(Ano, name = "Contagem") %>% # Contar publicações por ano # PT
     arrange(Ano) # Ordenar por ano
- #remover 2025 
+  #remover 2025 
   pub_counts <- bib_data %>%
     filter(!is.na(Ano)) %>%
     mutate(Ano = as.numeric(as.character(Ano))) %>%
@@ -61,9 +61,7 @@ tryCatch({
   model_linear <- tryCatch({ lm(y ~ x) }, error = function(e) { cat("Erro ajustando modelo linear:", conditionMessage(e), "\n"); NULL }) # PT
   
   # Modelo Exponencial: y ~ a * exp(b * x)
-  start_exp <- list(a = mean(y[x <= median(x)]),
-                    b = ifelse(is.null(model_linear), 0.01, coefficients(model_linear)[2] / mean(y)))
-  
+  #Valores iniciais baseados em log linear
   if (all(y > 0)) {
     log_fit <- lm(log(y) ~ x)
     a_start <- exp(coef(log_fit)[1])
@@ -74,7 +72,7 @@ tryCatch({
   }
   
   model_exponential <- tryCatch({
-    nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 1000))
+    nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 10000, minFactor = 1e-10))
   }, warning = function(w){ cat("Aviso ajustando modelo exponencial:", conditionMessage(w), "\n"); NULL}, # PT
   error = function(e) { cat("Erro ajustando modelo exponencial:", conditionMessage(e), "\n"); NULL }) # PT
   
