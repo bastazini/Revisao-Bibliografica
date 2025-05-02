@@ -4,33 +4,45 @@ library(wordcloud)
 library(tm)
 library(RColorBrewer)
 
-# Load Excel
-excel_file <- "estudos_workshop_445_metadados.xlsx"
+# --- Load Excel ---
+excel_file <- "estudos_final.xlsx"
 data <- read_excel(excel_file)
 
-# Split keywords
-keywords <- data[[ "Palavras-chave dos autores" ]] %>%
-  str_split(pattern = ";") %>%  # Split by semicolon
+# --- Keywords to Remove ---
+keywords_to_remove <- c(
+  "article", "artigo", "paper", "review", "study", "estudo", "research", "journal", "na"
+)
+
+# --- Specific Keyword Replacements (Unifications) ---
+# Each sublist: c(term_to_replace, replacement_term)
+keyword_replacements <- list(
+  c("land use change", "land use"),
+  c("mudança no uso da terra", "land use"),
+  c("uso e cobertura da terra", "land use"),
+  c("savannah", "savanna"),
+  c("brazilian savanna", "savanna")
+)
+
+# --- Clean and Process Keywords ---
+keywords <- data[["Palavras-chave dos autores"]] %>%
+  discard(is.na) %>%                         # Remove NAs
+  str_split(pattern = ";") %>%              # Split on ";"
   unlist() %>%
   str_trim() %>%
   tolower() %>%
-  discard(~ .x == "")
+  discard(~ .x == "") %>%                   # Remove empty strings
+  discard(~ .x %in% keywords_to_remove)     # Remove unwanted words
 
-# Split and clean keywords, removing NA entries first
-keywords <- data[[ "Palavras-chave dos autores" ]] %>%
-  discard(is.na) %>%               # REMOVE NA VALUES
-  str_split(pattern = ";") %>%     
-  unlist() %>%
-  str_trim() %>%
-  tolower() %>%
-  discard(~ .x == "na")              # REMOVE empty strings
+# --- Apply Replacements ---
+for (pair in keyword_replacements) {
+  keywords <- str_replace_all(keywords, fixed(pair[1]), pair[2])
+}
 
-
-# Create frequency table
+# --- Create Frequency Table ---
 keyword_freq <- table(keywords)
 
-# Word Cloud
-set.seed(123)  # for reproducibility
+# --- Plot Word Cloud ---
+set.seed(123)
 wordcloud(
   words = names(keyword_freq),
   freq = keyword_freq,
@@ -40,8 +52,8 @@ wordcloud(
   random.order = FALSE
 )
 
-#Save plot
-png("wordcloud.png", width = 1200, height = 1000)  # Larger canvas
+# --- Save Word Cloud as PNG ---
+png("wordcloud.png", width = 1200, height = 1000)
 wordcloud(
   words = names(keyword_freq),
   freq = keyword_freq,
