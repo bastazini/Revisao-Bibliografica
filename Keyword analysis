@@ -15,7 +15,7 @@ library(magick)   # For converting snapshot PNG to PDF
 
 # --- Parameters ---
 # (Parameters remain the same)
-excel_file <- "estudos.xlsx"
+excel_file <- "estudos_final.xlsx"
 keyword_column <- "Palavras-chave dos autores"
 year_column <- "Ano"
 keyword_separator <- ";"
@@ -43,8 +43,10 @@ keywords_to_remove <- c(
 # (Replacements remain the same)
 keyword_replacements <- list(
   c("land use change", "land use"),
-  c("mudança no uso da terra", "uso da terra"),
-  c("uso e cobertura da terra", "uso da terra")
+  c("mudança no uso da terra", "land use"),
+  c("uso e cobertura da terra", "land use"),
+  c("savannah", "savanna"),
+  c("brazilian savanna", "savanna")
 )
 
 # --- Output Files ---
@@ -55,7 +57,7 @@ output_sankey_pdf <- "tendencia_palavras_chave_sankey_PT.pdf"
 output_sankey_html <- "tendencia_palavras_chave_sankey_PT.html"
 
 # --- Helper Function for Callon's Metrics ---
-# (Function remains the same)
+# <<< MODIFICATION HERE: Replaced deprecated 'inc' with '.inc' >>>
 calculate_callon_metrics <- function(graph, communities_object, cluster_id) {
   cluster_nodes_indices <- which(membership(communities_object) == cluster_id)
   cluster_nodes_names <- V(graph)$name[cluster_nodes_indices]
@@ -67,7 +69,8 @@ calculate_callon_metrics <- function(graph, communities_object, cluster_id) {
   internal_weight_sum <- sum(E(subgraph)$weight, na.rm = TRUE)
   density <- internal_weight_sum
   external_weight_sum <- 0
-  all_incident_edges <- E(graph)[inc(cluster_nodes_indices)]
+  # Use .inc() instead of deprecated inc()
+  all_incident_edges <- E(graph)[.inc(cluster_nodes_indices)]
   if (length(all_incident_edges) > 0) {
     ends_matrix <- ends(graph, all_incident_edges)
     is_external <- (membership(communities_object)[ends_matrix[,1]] != cluster_id) | (membership(communities_object)[ends_matrix[,2]] != cluster_id)
@@ -289,11 +292,12 @@ tryCatch({
                fill = community_map, bty = "n", cex = 0.8, title="Comunidades")
       }
       dev.off()
-      par(mar=c(5.1, 4.1, 4.1, 2.1))
+      par(mar=c(5.1, 4.1, 4.1, 2.1)) # Reset par settings
       cat("Gráfico da rede salvo em:", output_network_pdf, "\n") # PT
     }, error = function(e_net){
       cat("Erro ao gerar PDF da rede:", conditionMessage(e_net), "\n") # PT
-      if(exists("dev.off") && dev.cur() != 1) try(dev.off(), silent=TRUE)
+      if(exists("dev.off") && !is.null(dev.list())) try(dev.off(), silent=TRUE) # Ensure device is closed on error
+      par(mar=c(5.1, 4.1, 4.1, 2.1)) # Reset par settings even on error
     })
   } else {
     cat("Pulando geração do gráfico da rede (grafo não disponível).\n") # PT
@@ -301,7 +305,7 @@ tryCatch({
   
   
   # --- PART 1.5: Thematic Map (using Callon's metrics - Save to PDF) ---
-  # (Code remains the same, uses graph_plot_obj and communities derived from final data)
+  # (Code uses graph_plot_obj and communities derived from final data)
   cat("\n--- Gerando Mapa Temático (Callon) ---\n") # PT
   
   thematic_plot_obj <- NULL
@@ -311,6 +315,7 @@ tryCatch({
     
     community_ids <- unique(membership(communities))
     thematic_metrics <- lapply(community_ids, function(comm_id) {
+      # Function call uses the corrected .inc() version internally now
       metrics <- calculate_callon_metrics(graph_plot_obj, communities, comm_id)
       nodes_in_comm_indices <- which(membership(communities) == comm_id)
       community_node_names <- V(graph_plot_obj)$name[nodes_in_comm_indices]
@@ -333,18 +338,26 @@ tryCatch({
     })
     
     thematic_data <- bind_rows(thematic_metrics) %>%
-      filter(!is.null(community_id), n_keywords > 0)
+      filter(!is.null(community_id), n_keywords > 0) # Ensure valid data
+    
+    # Ensure Centralidade and Densidade are numeric and finite before median calculation
+    thematic_data <- thematic_data %>%
+      mutate(Centralidade = as.numeric(Centralidade), Densidade = as.numeric(Densidade)) %>%
+      filter(is.finite(Centralidade), is.finite(Densidade))
     
     if(nrow(thematic_data) > 0) {
       cat("Criando e salvando Mapa Temático (salvando em", output_thematic_map_pdf, ")...\n") # PT
       
-      median_centrality <- median(thematic_data$Centralidade, na.rm = TRUE)
-      median_density <- median(thematic_data$Densidade, na.rm = TRUE)
+      # Ensure there are valid values to calculate median, provide fallback if not
+      median_centrality <- if(nrow(thematic_data) > 0) median(thematic_data$Centralidade, na.rm = TRUE) else 0
+      median_density <- if(nrow(thematic_data) > 0) median(thematic_data$Densidade, na.rm = TRUE) else 0
+      # Final check for finite values (though previous filter should handle this)
       median_centrality <- ifelse(is.finite(median_centrality), median_centrality, 0)
       median_density <- ifelse(is.finite(median_density), median_density, 0)
+      
       cat("Limites do quadrante (Medianas): Centralidade=", round(median_centrality,2), ", Densidade=", round(median_density,2), "\n")
       
-      # Alterado para usar "Temas Periféricos" como sugerido
+      # <<< MODIFICATION HERE: Explicitly call ggplot2::annotate >>>
       thematic_plot_obj <- ggplot(thematic_data, aes(x = Centralidade, y = Densidade)) +
         geom_hline(yintercept = median_density, linetype = "dashed", color = "grey50") +
         geom_vline(xintercept = median_centrality, linetype = "dashed", color = "grey50") +
@@ -353,12 +366,13 @@ tryCatch({
                         size = 3.0, max.overlaps = 15,
                         box.padding = 0.4, point.padding = 0.6) +
         scale_size_continuous(range = c(4, 12), name = "Nº de Palavras-\nchave no Tema") +
-        annotate("text", x = median_centrality, y = Inf, label = "Temas Motores\n", hjust = 0.5, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
-        annotate("text", x = -Inf, y = Inf, label = "Temas de Nicho\n", hjust = -0.1, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
-        annotate("text", x = -Inf, y = -Inf, label = "Temas Periféricos\n", hjust = -0.1, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") + # <<< NOME ALTERADO AQUI
-        annotate("text", x = median_centrality, y = -Inf, label = "Temas Básicos\n", hjust = 0.5, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") +
+        # Explicitly use ggplot2::annotate to avoid function masking issues
+        ggplot2::annotate("text", x = median_centrality, y = Inf, label = "Temas Motores\n", hjust = 0.5, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
+        ggplot2::annotate("text", x = -Inf, y = Inf, label = "Temas de Nicho\n", hjust = -0.1, vjust = 1.1, size = 3.5, color = "grey40", fontface="bold") +
+        ggplot2::annotate("text", x = -Inf, y = -Inf, label = "Temas Periféricos\n", hjust = -0.1, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") + # Nome já estava alterado
+        ggplot2::annotate("text", x = median_centrality, y = -Inf, label = "Temas Básicos\n", hjust = 0.5, vjust = -0.1, size = 3.5, color = "grey40", fontface="bold") +
         labs(
-          title = "Mapa Temático (Baseado em Centralidade e Densidade de Callon)", # PT
+          title = "Mapa Temático", # PT
           subtitle = paste("Comunidades da rede de coocorrência"), # PT
           x = "Centralidade (Força das ligações com outros temas)", # PT
           y = "Densidade (Força das ligações internas do tema)" # PT
@@ -404,6 +418,7 @@ tryCatch({
   if(exists("keyword_total_freq") && inherits(keyword_total_freq, "data.frame") && nrow(keyword_total_freq) > 0) {
     top_keywords_df <- keyword_total_freq # Already sorted and final
   } else { # Fallback just in case
+    cat("Aviso: Dataframe 'keyword_total_freq' não encontrado ou vazio. Recalculando frequências totais.\n")
     top_keywords_df <- keywords_long %>%
       count(keyword, sort = TRUE, name = "total_freq")
   }
@@ -435,26 +450,36 @@ tryCatch({
         mutate(source_name = as.character(year), target_name = keyword) %>%
         left_join(nodes_df %>% select(name, source_id = id), by = c("source_name" = "name")) %>%
         left_join(nodes_df %>% select(name, target_id = id), by = c("target_name" = "name")) %>%
+        # Ensure IDs were found before transmutation
+        filter(!is.na(source_id), !is.na(target_id)) %>%
         transmute(
           source = source_id,
           target = target_id,
           value = yearly_count,
-          group = target_name
+          group = target_name # Use keyword name for coloring links
         ) %>%
-        filter(!is.na(source), !is.na(target), value > 0)
+        filter(value > 0) # Ensure value is positive
       
       if(nrow(links_df) == 0) {
-        cat("Aviso: Falha ao criar links válidos para o diagrama Sankey. Pulando.\n") # PT
+        cat("Aviso: Falha ao criar links válidos para o diagrama Sankey (verifique se os IDs de nós foram correspondidos). Pulando.\n") # PT
       } else {
         # --- 11. Generate Sankey Diagram Object ---
         cat("Criando objeto do gráfico Sankey...\n") # PT
         
+        # Define custom color palette if needed, otherwise defaults will be used
+        # num_colors_needed <- length(unique(links_df$group))
+        # sankey_colors <- RColorBrewer::brewer.pal(max(3, min(9, num_colors_needed)), "Set1") # Example palette
+        # color_scale_sankey <- paste0('d3.scaleOrdinal().domain(["', paste(unique(links_df$group), collapse = '","'), '"]).range(["', paste(sankey_colors, collapse = '","'), '"])')
+        
         sankey_plot_obj <- sankeyNetwork(
           Links = links_df, Nodes = nodes_df, Source = "source",
           Target = "target", Value = "value", NodeID = "name",
-          NodeGroup = NULL, LinkGroup = "group", units = "Menções", # PT
+          NodeGroup = NULL, # Let nodes inherit color from links or be default
+          LinkGroup = "group", # Color links by the target keyword
+          units = "Menções", # PT
           fontSize = 11, nodeWidth = 30, nodePadding = 15, sinksRight = TRUE,
-          margin = list(top=35, bottom=10, left=50, right=50)
+          margin = list(top=35, bottom=10, left=50, right=50) # Adjusted margins slightly
+          # colourScale = color_scale_sankey # Uncomment to use custom D3 color scale
         )
         
         title_sankey <- paste0("Fluxo das ", num_top_keywords_trend, " Principais Palavras-chave por Ano") # PT title
@@ -465,6 +490,8 @@ tryCatch({
         # --- Save Interactive HTML Sankey ---
         cat("Salvando diagrama Sankey interativo em:", output_sankey_html, "\n") # PT
         tryCatch({
+          # Ensure the directory exists if saving to a subfolder
+          # dir.create(dirname(output_sankey_html), showWarnings = FALSE, recursive = TRUE)
           saveWidget(sankey_plot_obj_html, file = file.path(getwd(), output_sankey_html), selfcontained = TRUE)
           cat("Diagrama Sankey interativo salvo.\n") # PT
         }, error = function(e_html){
@@ -479,23 +506,29 @@ tryCatch({
         snapshot_success <- FALSE
         
         tryCatch({
+          # Save the base widget without the added title for screenshotting
           saveWidget(sankey_plot_obj, temp_html_sankey, selfcontained = TRUE)
+          # Take screenshot
           webshot2::webshot(url = temp_html_sankey, file = temp_png_sankey,
-                            delay = 2, vwidth = 1000, vheight = 700)
+                            delay = 2, vwidth = 1000, vheight = 700) # Adjust vwidth/vheight if needed
           
           if (file.exists(temp_png_sankey) && file.info(temp_png_sankey)$size > 0) {
+            # Read the PNG
             img <- magick::image_read(temp_png_sankey)
+            # Add title using magick
             img_with_title <- magick::image_annotate(img,
                                                      text = title_sankey,
-                                                     gravity = "north",
-                                                     location = "+0+10",
-                                                     size = 18,
-                                                     color = "black",
-                                                     weight = 700)
+                                                     gravity = "north", # Place title at the top center
+                                                     location = "+0+10", # Offset slightly from the top edge
+                                                     size = 18,        # Font size for title
+                                                     color = "black",    # Font color
+                                                     weight = 700)      # Bold font weight
+            # Write the final image with title to PDF
             magick::image_write(img_with_title, path = output_sankey_pdf, format = "pdf")
             snapshot_success <- TRUE
+            cat("PDF estático do Sankey salvo em:", output_sankey_pdf, "\n") # PT
           } else {
-            cat("Aviso: Falha ao criar o arquivo PNG temporário para o Sankey PDF.\n")
+            cat("Aviso: Falha ao criar o arquivo PNG temporário (", temp_png_sankey, ") para o Sankey PDF.\n")
           }
           
         }, error = function(e_sankey_pdf){
@@ -504,10 +537,11 @@ tryCatch({
           cat("O gráfico Sankey interativo pode ter sido salvo em:", output_sankey_html, "\n") # PT
           
         }, finally = {
+          # Clean up temporary files
           if (file.exists(temp_html_sankey)) try(unlink(temp_html_sankey), silent=TRUE)
           if (file.exists(temp_png_sankey)) try(unlink(temp_png_sankey), silent=TRUE)
         })
-        if(snapshot_success) cat("PDF estático do Sankey salvo em:", output_sankey_pdf, "\n") # PT
+        # Removed redundant success message here, it's now inside the try block
         
       }
     }
@@ -520,7 +554,16 @@ tryCatch({
   cat("\n----------------------\n")
   cat("Ocorreu um erro GERAL no script:\n") # PT
   cat(conditionMessage(e), "\n")
+  traceback() # Print traceback for more detailed debugging
   cat("----------------------\n")
+}, finally = {
+  # Ensure graphics devices are closed if script exits unexpectedly
+  if (!is.null(dev.list())) {
+    cat("Fechando dispositivos gráficos abertos...\n")
+    graphics.off()
+  }
+  # Reset par to default just in case
+  par(mar = c(5.1, 4.1, 4.1, 2.1), mfrow = c(1, 1))
 })
 
 cat("\n--- Script finalizado. Verifique os arquivos PDF e HTML gerados. ---\n") # PT
