@@ -72,7 +72,7 @@ tryCatch({
   }
   
   model_exponential <- tryCatch({
-    nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 10000, minFactor = 1e-10))
+    nls(y ~ a * exp(b * x), start = start_exp, control = nls.control(maxiter = 100000, minFactor = 1e-10))
   }, warning = function(w){ cat("Aviso ajustando modelo exponencial:", conditionMessage(w), "\n"); NULL}, # PT
   error = function(e) { cat("Erro ajustando modelo exponencial:", conditionMessage(e), "\n"); NULL }) # PT
   
