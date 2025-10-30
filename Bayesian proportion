@@ -1,0 +1,81 @@
+# Load libraries
+library(tidyverse)
+library(gtools)
+library(ggridges)
+library(forcats)
+
+# Define analysis function
+analyze_topics <- function(topics, counts, title = "Posterior Proportions") {
+  alpha_post <- counts + 1
+  posterior <- rdirichlet(5000, alpha_post)
+  
+  df <- as.data.frame(posterior)
+  colnames(df) <- topics
+  
+  df_long <- df |>
+    pivot_longer(cols = everything(), names_to = "Topic", values_to = "Proportion")
+  
+  topic_order <- df_long |>
+    group_by(Topic) |>
+    summarize(mean_prop = mean(Proportion)) |>
+    arrange(desc(mean_prop)) |>
+    pull(Topic)
+  
+  expected_prop <- round(1 / length(topics), 3)
+  
+  ggplot(df_long, aes(x = Proportion, y = fct_relevel(Topic, topic_order), fill = Topic)) +
+    geom_density_ridges(scale = 1.2, alpha = 0.8, color = "white") +
+    geom_vline(xintercept = expected_prop, linetype = "dashed", color = "black") +
+    labs(
+      title = title,
+      subtitle = paste("Expected proportion (dashed):"),
+      x = "Bayesian Posterior Estimate of Group Proportion",
+      y = NULL
+    )
+}
+
+# 1. General Categories of Impact
+topics1 <- c("Biodiversity", "GHG Emissions", "Environment", "Economy", "Human Health", "Social", "General", "Cultural")
+counts1 <- c(189, 135, 134, 91, 16, 16, 3, 3)
+p1 <- analyze_topics(topics1, counts1, "General Categories of Impact")
+
+# 2. Categories of Impact
+topics2 <- c("Biodiversity", "Environment", "Economy", "Human Health", "Social")
+counts2 <- c(85, 60, 46, 5, 2)
+p2 <- analyze_topics(topics2, counts2, "Categories of Impact")
+
+# 3. Environmental Impacts
+topics3 <- c("Rainfall", "River Flow", "Other", "Temperature", "Drought", "Fires", "Groundwater", "Sediment Flow")
+counts3 <- c(20, 19, 11, 10, 8, 7, 3, 1)
+p3 <- analyze_topics(topics3, counts3, "Environmental Impacts")
+
+# 4. Biodiversity Impacts
+topics4 <- c("Species Distribution", "Reproductive", "Other", "Diversity", "Extinction Risk",
+             "Genetic", "Population Decline", "Ecosystem Services", "Vegetation Loss", "Protected Area Risk")
+counts4 <- c(55, 8, 8, 7, 6, 4, 3, 2, 2, 1)
+p4 <- analyze_topics(topics4, counts4, "Biodiversity Impacts")
+
+# 5. Taxa Affected
+topics5 <- c("Plants", "Mammals", "Birds", "Invertebrates", "Not Specified", "Reptiles", "Amphibians")
+counts5 <- c(48, 11, 10, 6, 6, 5, 4)
+p5 <- analyze_topics(topics5, counts5, "Taxa Affected")
+
+# 6. Mitigation Measures
+topics6 <- c("No", "Evaluates", "Suggests")
+counts6 <- c(331, 108, 41)
+p6 <- analyze_topics(topics6, counts6, "Mitigation Measures")
+
+# 7. Adaptation Measures
+topics7 <- c("No", "Suggests", "Evaluates")
+counts7 <- c(324, 98, 56)
+p7 <- analyze_topics(topics7, counts7, "Adaptation Measures")
+
+# Show plots (you can also use ggsave to export)
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+print(p5)
+print(p6)
+print(p7)
+
